@@ -1,0 +1,70 @@
+{
+    "workbench.iconTheme": "material-icon-theme",
+    "editor.mouseWheelZoom": true,
+    "notebook.cellToolbarLocation": {
+        "default": "right",
+        "jupyter-notebook": "left"
+    },
+    "explorer.confirmDragAndDrop": false,
+    "jupyter.askForKernelRestart": false,
+    "jupyter.widgetScriptSources": [
+        "jsdelivr.com",
+        "unpkg.com"
+    ],
+    "editor.formatOnSave": true,
+    "editor.formatOnPaste": true,
+    "editor.formatOnType": true,
+    "notebook.defaultFormatter": "charliermarsh.ruff",
+    "notebook.formatOnCellExecution": true,
+    "editor.codeActionsOnSave": {
+        "source.fixAll": "explicit", // 自動修正
+        "source.organizeImports": "explicit" // import文のソート
+    },
+    "editor.defaultFormatter": "charliermarsh.ruff", // フォーマッターをRuffに設定
+    // デフォルト設定
+    "files.trimTrailingWhitespace": true, // 行末のスペースを削除
+    "editor.renderWhitespace": "all", // スペースの可視化
+    "editor.cursorStyle": "line-thin", // カーソルを極細スタイル
+    "editor.tabSize": 4, // タブを4スペースに設定
+    "files.eol": "\n", // ファイルの改行をLFに設定
+    "editor.minimap.showSlider": "always", // ミニマップを常に表示
+    "editor.minimap.renderCharacters": false, // ミニマップで文字を非表示
+    "editor.fontSize": 17, // エディタのフォントサイズ
+    "terminal.integrated.fontSize": 17, // ターミナルのフォントサイズ
+    "debug.console.fontSize": 17, // デバッグコンソールのフォントサイズ
+    "markdown.preview.fontSize": 17, // Markdownプレビューのフォントサイズ
+    "chat.editor.fontSize": 17, // チャットエディタのフォントサイズ
+    "scm.inputFontSize": 17, // SCM（ソース管理）の入力フォントサイズ
+    "git.autofetch": true, // Gitの自動フェッチを有効にする
+    // "ruff.configuration": "pyproject.toml", // Ruff設定ファイルのパス
+    "ruff.format.preview": false, // プレビュー中の機能を無効化
+    "ruff.lint.select": ["ALL"], // 全てのLinter機能を有効化
+    "ruff.lint.extendSelect": ["ALL"], // 全てのLinter拡張機能を有効化
+    "ruff.lint.ignore": [
+        "T201", // print() の使用を許可
+        "D400", "D415", // docstringの末尾がピリオド.の強制を無効化
+        "INP001", // __init__.py の設定不要
+        "ERA001", // コメントアウトされたコードをOK
+        "RET504", // 直接returnしなくてもOK
+    ], // Linter・Formatter無効化設定
+      "notebook.formatOnSave.enabled": true,          // フォーマッタ (ruff format) を走らせる
+  "notebook.codeActionsOnSave": {
+    // Ruff の自動修正（lint → fixAll）と import 整理
+    "notebook.source.fixAll.ruff": "explicit",
+    "notebook.source.organizeImports.ruff": "explicit"
+  },
+
+  // --- Python ファイル & Notebook の各セル ---
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,                  // ruff format を実行
+    "editor.codeActionsOnSave": {
+      // Ruff だけに限定したい場合は拡張子付きキーを使う
+      "source.fixAll.ruff": "always",
+      "source.organizeImports.ruff": "always"
+    }
+  },
+
+  // “Black など他のフォーマッター” が競合する場合はここで無効化
+  "python.formatting.provider": "none"
+}

@@ -1,0 +1,8 @@
+#!/bin/bash
+parentdir=@parentdir@
+srrid=@srrid@
+raw_name=@raw_name@
+dump_name=@dump_name@
+cd "$parentdir" || exit
+scfastq-dump "$srrid"
+mv "$raw_name" "$dump_name"

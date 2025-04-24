@@ -1,0 +1,9 @@
+[project]
+name = "TEST"
+version = "0.01"
+
+[fetch]
+wait_time = 4
+
+[R]
+r_path = "/usr/bin/R"
