@@ -1,3 +1,4 @@
+import argparse
 import os
 from typing import TYPE_CHECKING, Dict, Final, Optional
 
@@ -5,6 +6,7 @@ import polars as pl
 import scanpy as sc
 import scrublet as scr
 import toml
+from rich.console import Console
 
 from celline.config import Config
 from celline.DB.dev.handler import HandleResolver
@@ -14,6 +16,8 @@ from celline.utils.path import Path
 
 if TYPE_CHECKING:
     pass
+
+console = Console()
 
 class Preprocess(CellineFunction):
     TARGET_CELLTYPE: Final[Optional[list[str]]]
@@ -92,7 +96,7 @@ class Preprocess(CellineFunction):
                             on="cell",
                         )
                         .with_columns(
-                            (pl.col("cell_type").is_in(pl.select(pl.col("cell_type")).unique(pl.col("cell_type")).get_column("cell_type").to_list() if self.TARGET_CELLTYPE is None else self.TARGET_CELLTYPE)).alias("include")
+                            (pl.col("cell_type").is_in(obs.select(pl.col("cell_type")).unique().get_column("cell_type").to_list() if self.TARGET_CELLTYPE is None else self.TARGET_CELLTYPE)).alias("include")
                         )
                     )
                     scrub = scr.Scrublet(adata.X)
@@ -113,6 +117,39 @@ class Preprocess(CellineFunction):
                         .with_columns(((pl.col("n_genes_by_counts") >= 200) & pl.col("include")).alias("include"))
                         .with_columns(((pl.col("n_genes_by_counts") <= 5000) & pl.col("include")).alias("include"))
                         .with_columns(((pl.col("pct_counts_mt") <= 5) & pl.col("include")).alias("include"))
-                        .with_columns(((pl.col("predicted_doublets") is False) & pl.col("include")).alias("include"))
+                        .with_columns(((pl.col("predicted_doublets") == False) & pl.col("include")).alias("include"))
                         .write_csv(f"{path.data_sample}/cell_info.tsv", separator="\t")
                     )
+
+    def add_cli_args(self, parser: argparse.ArgumentParser) -> None:
+        """Add CLI arguments for the Preprocess function."""
+        parser.add_argument(
+            '--target-celltype', '-t',
+            nargs='+',
+            help='Target cell types to include in preprocessing'
+        )
+
+    def cli(self, project, args: Optional[argparse.Namespace] = None):
+        """CLI entry point for Preprocess function."""
+        target_celltype = None
+        if args and hasattr(args, 'target_celltype'):
+            target_celltype = args.target_celltype
+            
+        console.print("[cyan]Starting preprocessing...[/cyan]")
+        if target_celltype:
+            console.print(f"Target cell types: {', '.join(target_celltype)}")
+        
+        preprocess_instance = Preprocess(target_celltype)
+        return preprocess_instance.call(project)
+
+    def get_description(self) -> str:
+        return """Preprocess counted data with quality control and cell type filtering.
+        
+This function performs quality control on counted data, calculates QC metrics,
+detects doublets, and filters cells based on specified criteria."""
+
+    def get_usage_examples(self) -> list[str]:
+        return [
+            "celline run preprocess",
+            "celline run preprocess --target-celltype Neuron Astrocyte"
+        ]

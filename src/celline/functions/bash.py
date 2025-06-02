@@ -27,7 +27,7 @@ class Promise:
             )
             self.resolve(result.decode())
         except subprocess.CalledProcessError as e:
-            self.catch(e.output.decode())
+            self.catch_error(e.output.decode())
         return self
 
     def resolve(self, result: str) -> "Promise":
@@ -41,7 +41,7 @@ class Promise:
         self._callbacks.append(callback)
         return self
 
-    def catch(self, error: str) -> "Promise":
+    def catch_error(self, error: str) -> "Promise":
         self._error = error
         for error_callback in self._error_callbacks:
             error_callback(error)

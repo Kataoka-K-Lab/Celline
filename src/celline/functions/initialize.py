@@ -1,19 +1,16 @@
 import subprocess
-from typing import Dict, List, Optional
 
 import inquirer
-import inquirer.themes as themes
 
 from celline.config import Setting
 from celline.functions._base import CellineFunction
-from celline.plugins.collections.generic import DictionaryC, ListC
 
 
 class Initialize(CellineFunction):
     def register(self) -> str:
         return "init"
 
-    def on_call(self, args: Dict[str, DictionaryC[str, Optional[str]]]):
+    def call(self, project):
         settings = Setting()
         proc = subprocess.Popen("which R", stdout=subprocess.PIPE, shell=True)
         result = proc.communicate()
@@ -31,4 +28,4 @@ class Initialize(CellineFunction):
         settings.wait_time = 4
         settings.flush()
         print("Completed.")
-        return
+        return project
