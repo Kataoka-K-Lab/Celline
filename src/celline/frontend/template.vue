@@ -18,7 +18,7 @@ export default defineComponent({
   setup() {
     const title = ref("%%title%%");
     const description = ref("%%description%%");
-    const items = ref(%%items%%);
+    const items = ref<string[]>([]);
     const metadata = ref({ key: "%%metadata_key%%" });
 
     return {

@@ -72,10 +72,16 @@ def cmd_help(args: argparse.Namespace) -> None:
         console.print("  celline [command] [options]")
         console.print()
         console.print("Available commands:")
-        console.print("  list              List all available functions")
-        console.print("  help [function]   Show help for a specific function")
-        console.print("  run <function>    Run a specific function")
+        console.print("  init [name]         Initialize a new celline project")
+        console.print("  list                List all available functions")
+        console.print("  help [function]     Show help for a specific function")
+        console.print("  run <function>      Run a specific function")
+        console.print("  run interactive     Launch interactive web interface")
+        console.print("  interactive         Launch interactive web interface")
+        console.print("  info                Show system information")
+        console.print("  api                 Start API server only (for testing)")
         console.print()
+        console.print("Use 'celline init' to create a new project.")
         console.print("Use 'celline list' to see all available functions.")
         console.print("Use 'celline help <function>' to see detailed help for a specific function.")
 
@@ -120,6 +126,95 @@ def cmd_run(args: argparse.Namespace) -> None:
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
+def cmd_init(args: argparse.Namespace) -> None:
+    """Initialize a new celline project."""
+    import os
+    import shutil
+    from pathlib import Path
+    
+    project_name = getattr(args, 'project_name', None)
+    if not project_name:
+        project_name = input("Enter project name: ").strip()
+        if not project_name:
+            console.print("[red]Project name is required.[/red]")
+            return
+    
+    project_dir = Path(project_name)
+    
+    if project_dir.exists():
+        console.print(f"[red]Directory '{project_name}' already exists.[/red]")
+        return
+    
+    try:
+        # Create project directory
+        project_dir.mkdir(parents=True)
+        console.print(f"[green]Created project directory: {project_name}[/green]")
+        
+        # Create basic project structure
+        (project_dir / "data").mkdir()
+        (project_dir / "results").mkdir()
+        (project_dir / "scripts").mkdir()
+        
+        # Create config files
+        setting_content = """[project]
+name = "{}"
+version = "1.0.0"
+description = "Single cell analysis project"
+
+[analysis]
+# Analysis parameters go here
+""".format(project_name)
+        
+        (project_dir / "setting.toml").write_text(setting_content)
+        
+        # Create sample config
+        samples_content = """# Sample configuration
+# Add your samples here following this format:
+# [samples.sample1]
+# name = "Sample 1"
+# path = "data/sample1"
+"""
+        (project_dir / "samples.toml").write_text(samples_content)
+        
+        # Create README
+        readme_content = f"""# {project_name}
+
+This is a celline single cell analysis project.
+
+## Directory Structure
+
+- `data/`: Raw and processed data files
+- `results/`: Analysis results and outputs
+- `scripts/`: Custom analysis scripts
+- `setting.toml`: Project configuration
+- `samples.toml`: Sample configuration
+
+## Usage
+
+To run celline functions in this project:
+
+```bash
+cd {project_name}
+celline list  # List available functions
+celline run <function_name>  # Run a specific function
+```
+"""
+        (project_dir / "README.md").write_text(readme_content)
+        
+        console.print(f"[green]Project '{project_name}' initialized successfully![/green]")
+        console.print()
+        console.print("Next steps:")
+        console.print(f"  1. cd {project_name}")
+        console.print("  2. Edit samples.toml to configure your samples")
+        console.print("  3. Run 'celline list' to see available functions")
+        
+    except Exception as e:
+        console.print(f"[red]Error creating project: {e}[/red]")
+        # Clean up on error
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
+
+
 def cmd_info(args: argparse.Namespace) -> None:
     """Show information about the celline system."""
     console.print("[bold]Celline System Information[/bold]")
@@ -142,3 +237,47 @@ def cmd_info(args: argparse.Namespace) -> None:
     console.print("[bold]Functions by module:[/bold]")
     for module, funcs in sorted(modules.items()):
         console.print(f"  {module}: {', '.join(f.name for f in funcs)}")
+
+
+def cmd_interactive(args: argparse.Namespace) -> None:
+    """Launch Celline in interactive web mode."""
+    from celline.cli.interactive import main as interactive_main
+    
+    console.print("[bold]🧬 Starting Celline Interactive Mode[/bold]")
+    console.print("This will launch both the API server and web interface...")
+    console.print()
+    
+    try:
+        interactive_main()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interactive mode stopped[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Error starting interactive mode: {e}[/red]")
+        import traceback
+        if console.is_terminal:
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+
+
+def cmd_api(args: argparse.Namespace) -> None:
+    """Start only the API server for testing."""
+    console.print("[bold]🚀 Starting Celline API Server[/bold]")
+    console.print("This will start only the API server on http://localhost:8000")
+    console.print()
+    
+    try:
+        import sys
+        from pathlib import Path
+        
+        # Add project root to Python path
+        project_root = Path(__file__).parent.parent.parent
+        sys.path.insert(0, str(project_root / "src"))
+        
+        from celline.cli.start_simple_api import main
+        main()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]API server stopped[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Error starting API server: {e}[/red]")
+        import traceback
+        if console.is_terminal:
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")

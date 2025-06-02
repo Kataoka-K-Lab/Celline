@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import List, Optional
 
-from celline.cli.commands import cmd_list, cmd_help, cmd_run, cmd_info
+from celline.cli.commands import cmd_list, cmd_help, cmd_run, cmd_info, cmd_init, cmd_interactive, cmd_api
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -18,6 +18,10 @@ def create_parser() -> argparse.ArgumentParser:
     )
     
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    
+    # Init command
+    init_parser = subparsers.add_parser('init', help='Initialize a new celline project')
+    init_parser.add_argument('project_name', nargs='?', help='Project name')
     
     # List command
     list_parser = subparsers.add_parser('list', help='List all available functions')
@@ -35,6 +39,12 @@ def create_parser() -> argparse.ArgumentParser:
     
     # Info command
     info_parser = subparsers.add_parser('info', help='Show system information')
+    
+    # Interactive command
+    interactive_parser = subparsers.add_parser('interactive', help='Launch interactive web interface')
+    
+    # API command (for testing)
+    api_parser = subparsers.add_parser('api', help='Start API server only (for testing)')
     
     return parser
 
@@ -54,14 +64,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     
     try:
-        if args.command == 'list':
+        if args.command == 'init':
+            cmd_init(args)
+        elif args.command == 'list':
             cmd_list(args)
         elif args.command == 'help':
             cmd_help(args)
         elif args.command == 'run':
-            cmd_run(args)
+            # Check if the function is 'interactive'
+            if hasattr(args, 'function_name') and args.function_name == 'interactive':
+                cmd_interactive(args)
+            else:
+                cmd_run(args)
         elif args.command == 'info':
             cmd_info(args)
+        elif args.command == 'interactive':
+            cmd_interactive(args)
+        elif args.command == 'api':
+            cmd_api(args)
         else:
             parser.print_help()
             return 1
