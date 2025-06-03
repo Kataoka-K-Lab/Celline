@@ -15,6 +15,7 @@ from celline.plugins.reflection.method import MethodInfo
 from celline.plugins.reflection.module import Module
 from celline.plugins.reflection.type import TypeC
 from celline.utils.exceptions import NullPointException
+from celline.log.logger import get_logger
 
 TProject = TypeVar("TProject", bound=BaseModel)
 TSample = TypeVar("TSample", bound=BaseModel)
@@ -68,8 +69,12 @@ class BaseHandler(Generic[TProject, TSample, TRun], ABC):
 
     def add(self, acceptable_id: str, force_search=False):
         """Add to DB & samples.toml with acceptable_id"""
+        logger = get_logger(__name__)
+        logger.info(f"Starting to add {acceptable_id} to database")
+        
         resolver = self.resolver(acceptable_id)
         if isinstance(self.project, resolver):
+            logger.info(f"Identified {acceptable_id} as project type, fetching project data")
             project: BaseSchema = self.project.search(acceptable_id, force_search)
             sample_ids = project.children
             if sample_ids is None:
@@ -77,29 +82,58 @@ class BaseHandler(Generic[TProject, TSample, TRun], ABC):
                     f"children were not found in target project: {project.key}."
                 )
             sample_ids = sample_ids.split(",")
-            samples: List[BaseSchema] = [
-                self.sample.search(sample_id) for sample_id in sample_ids
-            ]
-            for sample in samples:
+            logger.info(f"Found {len(sample_ids)} samples in project {acceptable_id}: {sample_ids}")
+            
+            samples: List[BaseSchema] = []
+            for i, sample_id in enumerate(sample_ids, 1):
+                logger.info(f"Fetching sample {i}/{len(sample_ids)}: {sample_id}")
+                try:
+                    sample = self.sample.search(sample_id)
+                    samples.append(sample)
+                    logger.info(f"Successfully fetched sample {sample_id}")
+                except Exception as e:
+                    logger.error(f"Failed to fetch sample {sample_id}: {str(e)}")
+                    raise
+            for j, sample in enumerate(samples, 1):
+                logger.info(f"Processing sample {j}/{len(samples)}: {sample.key}")
                 if sample.title is None:
                     sample.title = ""
                 run_ids = sample.children
                 if run_ids is not None:
                     run_ids = run_ids.split(",")
-                    for target_run_id in run_ids:
-                        self.run.search(target_run_id)
+                    logger.info(f"Found {len(run_ids)} runs for sample {sample.key}")
+                    for k, target_run_id in enumerate(run_ids, 1):
+                        logger.info(f"Fetching run {k}/{len(run_ids)}: {target_run_id}")
+                        try:
+                            self.run.search(target_run_id)
+                            logger.info(f"Successfully fetched run {target_run_id}")
+                        except Exception as e:
+                            logger.error(f"Failed to fetch run {target_run_id}: {str(e)}")
+                            raise
                 self._add_to_projsample({str(sample.key): sample.title})
+                logger.info(f"Added sample {sample.key} to project samples")
         elif isinstance(self.sample, resolver):
+            logger.info(f"Identified {acceptable_id} as sample type, fetching sample data")
             sample: BaseSchema = self.sample.search(acceptable_id, force_search)
             if sample.title is None:
                 sample.title = ""
             runs = sample.children
             if runs is not None:
-                for run_id in runs.split(","):
-                    self.run.search(run_id)
+                run_list = runs.split(",")
+                logger.info(f"Found {len(run_list)} runs for sample {acceptable_id}")
+                for i, run_id in enumerate(run_list, 1):
+                    logger.info(f"Fetching run {i}/{len(run_list)}: {run_id}")
+                    try:
+                        self.run.search(run_id)
+                        logger.info(f"Successfully fetched run {run_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to fetch run {run_id}: {str(e)}")
+                        raise
             if sample.parent is not None:
+                logger.info(f"Fetching parent project {sample.parent} for sample {acceptable_id}")
                 self.project.search(sample.parent, force_search)
             self._add_to_projsample({str(sample.key): sample.title})
+            logger.info(f"Added sample {acceptable_id} to project samples")
         elif isinstance(self.run, resolver):
             run: BaseSchema = self.run.search(acceptable_id, force_search)
             if run.parent is None:

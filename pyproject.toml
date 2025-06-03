@@ -1,6 +1,6 @@
 [project]
 name = "celline"
-version = "0.1.1"
+version = "0.1.2b"
 description = "Add your description here"
 readme = "README.md"
 authors = [
@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "argparse>=1.4.0",
     "continuousvi>=0.1.5",
+    "fastapi>=0.104.0",
     "inquirer>=3.4.0",
     "iprogress>=0.4",
     "ipywidgets>=8.1.5",
@@ -17,24 +18,37 @@ dependencies = [
     "pandas>=2.2.3",
     "polars>=1.26.0",
     "pyarrow>=19.0.1",
+    "pydantic>=2.5.0",
     "pyper>=1.1.2",
     "pysradb>=2.2.2",
     "pyyaml>=6.0.2",
+    "requests>=2.31.0",
     "requests-html>=0.10.0",
     "rich>=14.0.0",
     "scanpy>=1.11.1",
     "scrublet>=0.2.3",
     "toml>=0.10.2",
     "tqdm>=4.67.1",
+    "uvicorn>=0.24.0",
     "varname>=0.14.0",
 ]
 
 [project.scripts]
-celline = "celline:main"
+celline = "celline.cli.main:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/celline"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README.md",
+    "/pyproject.toml"
+]
 
 [dependency-groups]
 dev = [
