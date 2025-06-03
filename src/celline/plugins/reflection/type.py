@@ -1,5 +1,4 @@
 import inspect
-from os import name
 from typing import Any, Generic, Type, TypeVar, overload
 
 from celline.plugins.collections.generic import (DictionaryC, KeyValuePair,

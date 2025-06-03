@@ -2,7 +2,7 @@ import json
 from json.decoder import JSONDecodeError
 from typing import Any, Callable, Generic, List, TypeVar, Union, overload
 
-from celline.plugins.collections.enumrable import Enumrable
+from celline.plugins.collections.enumrable import Enumerable
 
 T1 = TypeVar('T1')
 T2 = TypeVar('T2')
@@ -15,7 +15,6 @@ class ListC(Generic[T1]):
     `li = List[Type]()` Create new List instance \n
     `li.Add(obj)` Example: Add element \n
     """
-    __value = []
 
     @staticmethod
     def Range(count: int, fn: Callable[[int], T1]):
@@ -251,7 +250,7 @@ class ListC(Generic[T1]):
         """　Explicitly sort by the int or str returned by `fn`.\n
         @selector: Selector to order
         """
-        self.__value = Enumrable.OrderBy(self.__value, selector)
+        self.__value = Enumerable.OrderBy(self.__value, selector)
         return self
 
     def OrderByDescending(self, selector: Callable[[T1], Union[int, str]]):
@@ -375,7 +374,7 @@ class ListC(Generic[T1]):
     def Last(self):
         """ Get the last element.
         """
-        if self.Length > 0:
+        if self.Length <= 0:
             return None
         else:
             obj: T1 = self.__value[self.Length - 1]
@@ -512,15 +511,15 @@ class DictionaryC(Generic[T1, T2]):
     `li = Dictionary[KeyType, ValueType]()` Create new List instance \n
     `li.Add(obj)` Example: Add element \n
     """
-    __kp: ListC[KeyValuePair[T1, T2]] = ListC[KeyValuePair[T1, T2]]([])
-    __keys: ListC[T1] = ListC([])
-    __values: ListC[T2] = ListC([])
 
     A = TypeVar('A')
 
     def __init__(self) -> None:
         """ Create a given type Dictionary.
         """
+        self.__kp: ListC[KeyValuePair[T1, T2]] = ListC[KeyValuePair[T1, T2]]([])
+        self.__keys: ListC[T1] = ListC([])
+        self.__values: ListC[T2] = ListC([])
 
     def __getitem__(self, key: T1):
         if self.__keys.Length == 0:
@@ -863,8 +862,9 @@ class DictionaryC(Generic[T1, T2]):
         counter = 0
         for val in self.PairList:
             joined += fn(val)
-            if counter < self.Length:
+            if counter < self.Length - 1:
                 joined += combiner
+            counter += 1
         return joined
 
     def Select(self, fn: Callable[[KeyValuePair[T1, T2]], TResult]):

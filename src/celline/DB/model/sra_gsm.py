@@ -180,11 +180,49 @@ class SRA_GSM(BaseModel[SRA_GSM_Schema]):
                 f"{SRA_GSM.BASE_REQUEST_URL}{gsm_id}&targ=all&view=quick&form=xml",
                 timeout=100,
             )
-        except ET.ParseError as err:
-            print(f"Could not find target GSM: {gsm_id}")
-            print("Tracebacks")
-            print(err)
-        return ET.fromstring(xml.content.decode())
+            xml.raise_for_status()
+            
+            # Try to parse the XML content
+            try:
+                return ET.fromstring(xml.content.decode())
+            except ET.ParseError as parse_err:
+                print(f"XML Parse Error for GSM: {gsm_id}")
+                print(f"Error details: {parse_err}")
+                
+                # Try to clean the XML content
+                content = xml.content.decode()
+                
+                # Log the problematic content around the error location if possible
+                try:
+                    lines = content.split('\n')
+                    if len(lines) >= 1286:
+                        print(f"Content around line 1286:")
+                        start = max(0, 1286 - 5)
+                        end = min(len(lines), 1286 + 5)
+                        for i in range(start, end):
+                            marker = " --> " if i == 1285 else "     "
+                            print(f"{marker}Line {i+1}: {lines[i]}")
+                except Exception:
+                    pass
+                
+                # Try alternative parsing approaches
+                try:
+                    # Remove problematic characters and try again
+                    cleaned_content = content.replace('\x00', '').replace('\x08', '').replace('\x0b', '').replace('\x0c', '')
+                    return ET.fromstring(cleaned_content)
+                except ET.ParseError:
+                    # If still failing, try to find and fix mismatched tags
+                    try:
+                        from xml.dom import minidom
+                        dom = minidom.parseString(cleaned_content)
+                        return ET.fromstring(dom.toxml())
+                    except Exception:
+                        raise ET.ParseError(f"Could not parse XML for GSM: {gsm_id}. Original error: {parse_err}")
+                        
+        except requests.RequestException as req_err:
+            print(f"Request Error for GSM: {gsm_id}")
+            print(f"Error details: {req_err}")
+            raise KeyError(f"Could not fetch GSM: {gsm_id} from server")
 
     @staticmethod
     def get_gsm_xml_structure(gsm_id: str):

@@ -3,7 +3,7 @@ from typing import Any, Callable, Generic, List, TypeVar, Union
 T1 = TypeVar('T1')
 
 
-class Enumrable(Generic[T1]):
+class Enumerable(Generic[T1]):
 
     @staticmethod
     def OrderBy(arr: list, keyselector: Callable[[T1], Union[int, str]]) -> List[Any]:
@@ -16,11 +16,11 @@ class Enumrable(Generic[T1]):
         right = arr[mid:]
 
         # 再帰的に分割を行う
-        left = Enumrable.OrderBy(left, keyselector)
-        right = Enumrable.OrderBy(right, keyselector)
+        left = Enumerable.OrderBy(left, keyselector)
+        right = Enumerable.OrderBy(right, keyselector)
 
         # returnが返ってきたら、結合を行い、結合したものを次に渡す
-        return Enumrable.__merge(left, right, keyselector)
+        return Enumerable.__merge(left, right, keyselector)
 
     @staticmethod
     def __merge(left: List, right: List, keyselector: Callable[[T1], Any]):

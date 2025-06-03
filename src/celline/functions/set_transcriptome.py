@@ -26,4 +26,4 @@ class SetTranscriptome(CellineFunction):
         Transcriptome().add_path(
             self.species, self.built_path, force_update=self.force_update
         )
-        return self
+        return project
