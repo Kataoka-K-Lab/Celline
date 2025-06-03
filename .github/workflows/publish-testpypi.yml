@@ -1,27 +1,90 @@
-# .github/workflows/publish-testpypi.yml
+# # .github/workflows/publish-testpypi.yml
+# name: Publish to PyPI
+
+# on:
+#   push:
+#     branches:
+#       - main
+
+# jobs:
+#   build-and-deploy:
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Check out code
+#         uses: actions/checkout@v3
+
+#       - name: Set up Python (for parsing)
+#         uses: actions/setup-python@v4
+#         with:
+#           python-version: '3.10'
+
+#       - name: Install dependencies (toml etc.)
+#         run: |
+#           pip install toml
+
+#       - name: Parse pyproject.toml
+#         id: parse_toml
+#         run: |
+#           python scripts/parse_pyproject.py > parse_output.txt
+#           while IFS= read -r line; do
+#             echo "$line" >> $GITHUB_OUTPUT
+#           done < parse_output.txt
+
+#       # ここでパースした python_version を使ってPythonを再セットアップ
+#       - name: Re-Set up Python
+#         uses: actions/setup-python@v4
+#         with:
+#           python-version: ${{ steps.parse_toml.outputs.python_version }}
+
+#       - name: Install hatch
+#         run: |
+#           pip install --upgrade pip
+#           pip install hatch
+
+#       - name: Build distribution
+#         run: |
+#           hatch build
+
+#       - name: Publish to PyPI
+#         env:
+#           PYPI_USERNAME: ${{ secrets.PYPI_USERNAME }}
+#           PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+#         run: |
+#           hatch publish -r "https://upload.pypi.org/legacy/" -u __token__ -a ${{ secrets.PYPI_TOKEN }}
+
+#       - name: Show final version
+#         run: |
+#           echo "Deployed version is: ${{ steps.parse_toml.outputs.version }}"
+# .github/workflows/publish.yml
 name: Publish to PyPI
 
 on:
   push:
     branches:
-      - main
+      - main        # ← 本番リリース用ブランチ。必要に応じて変更
+
+permissions:
+  contents: read
+  id-token: write   # ★ OIDC で必須
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. ソース取得
       - name: Check out code
         uses: actions/checkout@v3
 
+      # 2. 一時的に固定 Python で pyproject.toml を解析
       - name: Set up Python (for parsing)
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: Install dependencies (toml etc.)
-        run: |
-          pip install toml
+      - name: Install parsing deps
+        run: pip install toml           # parse_pyproject.py が依存するパッケージ
 
       - name: Parse pyproject.toml
         id: parse_toml
@@ -31,28 +94,28 @@ jobs:
             echo "$line" >> $GITHUB_OUTPUT
           done < parse_output.txt
 
-      # ここでパースした python_version を使ってPythonを再セットアップ
-      - name: Re-Set up Python
+      # 3. プロジェクト指定の Python バージョンで再セットアップ
+      - name: Re-Set up Python (project version)
         uses: actions/setup-python@v4
         with:
           python-version: ${{ steps.parse_toml.outputs.python_version }}
 
+      # 4. Hatch でビルド
       - name: Install hatch
         run: |
           pip install --upgrade pip
           pip install hatch
 
       - name: Build distribution
-        run: |
-          hatch build
+        run: hatch build                # dist/ フォルダ生成
 
+      # 5. OIDC で PyPI にアップロード
       - name: Publish to PyPI
-        env:
-          PYPI_USERNAME: ${{ secrets.PYPI_USERNAME }}
-          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: |
-          hatch publish -r "https://upload.pypi.org/legacy/" -u __token__ -a ${{ secrets.PYPI_TOKEN }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # TestPyPI に出したい場合は ↓ をアンコメント
+        # with:
+        #   repository-url: https://test.pypi.org/legacy/
 
+      # 6. バージョン確認用ログ
       - name: Show final version
-        run: |
-          echo "Deployed version is: ${{ steps.parse_toml.outputs.version }}"
+        run: echo "Deployed version is: ${{ steps.parse_toml.outputs.version }}"
