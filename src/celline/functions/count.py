@@ -1,9 +1,11 @@
+import argparse
 import datetime
 import os
 import subprocess
 from typing import TYPE_CHECKING, Callable, Dict, Final, List, NamedTuple, Optional
 
 import toml
+from rich.console import Console
 
 from celline.DB.dev.handler import HandleResolver
 from celline.DB.dev.model import SampleSchema
@@ -17,6 +19,8 @@ from celline.utils.path import Path
 
 if TYPE_CHECKING:
     from celline import Project
+
+console = Console()
 
 
 class Count(CellineFunction):
@@ -100,3 +104,38 @@ class Count(CellineFunction):
                     all_job_files.append(f"{path.resources_sample_src}/count.sh")
         ThreadObservable.call_shell(all_job_files).watch()
         return project
+
+    def add_cli_args(self, parser: argparse.ArgumentParser) -> None:
+        """Add CLI arguments for the Count function."""
+        parser.add_argument(
+            '--nthread', '-n',
+            type=int,
+            default=1,
+            help='Number of threads to use for counting (default: 1)'
+        )
+
+    def cli(self, project: "Project", args: Optional[argparse.Namespace] = None) -> "Project":
+        """CLI entry point for Count function."""
+        nthread = 1
+        if args and hasattr(args, 'nthread'):
+            nthread = args.nthread
+            
+        console.print(f"[cyan]Starting count with {nthread} thread(s)...[/cyan]")
+        
+        # Create Count instance and call it
+        count_instance = Count(nthread)
+        return count_instance.call(project)
+
+    def get_description(self) -> str:
+        """Get description for CLI help."""
+        return """Count downloaded FASTQ files using Cell Ranger.
+        
+This function processes downloaded raw sequencing data and generates 
+feature-barcode matrices using Cell Ranger count."""
+
+    def get_usage_examples(self) -> list[str]:
+        """Get usage examples for CLI help."""
+        return [
+            "celline run count",
+            "celline run count --nthread 8"
+        ]
