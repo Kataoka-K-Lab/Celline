@@ -1,35 +1,28 @@
-from typing import Dict, List, Optional
+import argparse
+from typing import Optional
+from rich.console import Console
 
-import celline.data.files as fs
 from celline.functions._base import CellineFunction
-from celline.plugins.collections.generic import DictionaryC, ListC
+
+console = Console()
 
 
 class Info(CellineFunction):
     def register(self) -> str:
         return "info"
 
-    def on_call(self, args: Dict[str, DictionaryC[str, Optional[str]]]):
-        options = args["options"]
-        id = options["req_1"]
-        if id is None:
-            print("[ERROR] Please specify target ID")
-            quit()
-        data = fs.read_accessions()
-        fetch = False
-        if id.startswith("GSE"):
-            if id in data["GSE"]:
-                print(data["GSE"][id])
-            else:
-                fetch = True
-        elif id.startswith("GSM"):
-            if id in data["GSM"]:
-                print(data["GSM"][id])
-            else:
-                fetch = True
-        elif id.startswith("SRR"):
-            if id in data["SRR"]:
-                print(data["SRR"][id])
-            else:
-                fetch = True
-        return
+    def call(self, project):
+        console.print("[cyan]Project information:[/cyan]")
+        console.print(f"Project path: {project.PROJ_PATH}")
+        console.print(f"Exec path: {project.EXEC_PATH}")
+        return project
+
+    def cli(self, project, args: Optional[argparse.Namespace] = None):
+        """CLI entry point for Info function."""
+        return self.call(project)
+
+    def get_description(self) -> str:
+        return "Display project information and status."
+
+    def get_usage_examples(self) -> list[str]:
+        return ["celline run info"]
