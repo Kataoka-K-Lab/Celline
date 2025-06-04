@@ -369,13 +369,41 @@ class DependencyValidator:
         try:
             # Install the R version if not already installed
             console.print(f"[cyan]Installing R {r_version}...[/cyan]")
-            result = subprocess.run(
-                ["rig", "add", r_version], 
-                capture_output=True, text=True, timeout=600  # 10 minutes
+            
+            # Use rig add without sudo - rig handles user installations
+            cmd = ["rig", "add", r_version]
+            console.print(f"[dim]Running: {' '.join(cmd)}[/dim]")
+            
+            # Run with real-time output
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
             )
             
-            if result.returncode != 0:
-                console.print(f"[red]Failed to install R {r_version}: {result.stderr}[/red]")
+            # Show real-time output
+            output_lines = []
+            while True:
+                output = process.stdout.readline()
+                if output == '' and process.poll() is not None:
+                    break
+                if output:
+                    output_lines.append(output.strip())
+                    console.print(f"[dim]{output.strip()}[/dim]")
+            
+            # Wait for completion
+            return_code = process.poll()
+            
+            if return_code != 0:
+                console.print(f"[red]Failed to install R {r_version}[/red]")
+                console.print(f"[red]Exit code: {return_code}[/red]")
+                if output_lines:
+                    console.print("[red]Output:[/red]")
+                    for line in output_lines[-10:]:  # Show last 10 lines
+                        console.print(f"[red]{line}[/red]")
                 return None
             
             console.print(f"[green]Successfully installed R {r_version}[/green]")
@@ -389,14 +417,17 @@ class DependencyValidator:
             if list_result.returncode == 0:
                 lines = list_result.stdout.strip().split('\n')
                 for line in lines:
-                    if line.strip() and r_version in line:
+                    if line.strip():
                         parts = line.strip().split()
                         if len(parts) >= 2:
+                            version_part = parts[0]
                             path = parts[1]
-                            r_executable = os.path.join(path, "bin", "R")
-                            if os.path.exists(r_executable):
-                                console.print(f"[green]R {r_version} is available at: {r_executable}[/green]")
-                                return r_executable
+                            # Check if this matches our requested version
+                            if (r_version == "release" and "*" in line) or r_version in version_part:
+                                r_executable = os.path.join(path, "bin", "R")
+                                if os.path.exists(r_executable):
+                                    console.print(f"[green]R {version_part} is available at: {r_executable}[/green]")
+                                    return r_executable
             
             console.print(f"[red]Could not find installed R {r_version}[/red]")
             return None
