@@ -127,92 +127,16 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def cmd_init(args: argparse.Namespace) -> None:
-    """Initialize a new celline project."""
-    import os
-    import shutil
-    from pathlib import Path
-    
-    project_name = getattr(args, 'project_name', None)
-    if not project_name:
-        project_name = input("Enter project name: ").strip()
-        if not project_name:
-            console.print("[red]Project name is required.[/red]")
-            return
-    
-    project_dir = Path(project_name)
-    
-    if project_dir.exists():
-        console.print(f"[red]Directory '{project_name}' already exists.[/red]")
-        return
+    """Initialize celline system configuration (same as 'celline run init')."""
+    from celline.functions.initialize import Initialize
     
     try:
-        # Create project directory
-        project_dir.mkdir(parents=True)
-        console.print(f"[green]Created project directory: {project_name}[/green]")
-        
-        # Create basic project structure
-        (project_dir / "data").mkdir()
-        (project_dir / "results").mkdir()
-        (project_dir / "scripts").mkdir()
-        
-        # Create config files
-        setting_content = """[project]
-name = "{}"
-version = "1.0.0"
-description = "Single cell analysis project"
-
-[analysis]
-# Analysis parameters go here
-""".format(project_name)
-        
-        (project_dir / "setting.toml").write_text(setting_content)
-        
-        # Create sample config
-        samples_content = """# Sample configuration
-# Add your samples here following this format:
-# [samples.sample1]
-# name = "Sample 1"
-# path = "data/sample1"
-"""
-        (project_dir / "samples.toml").write_text(samples_content)
-        
-        # Create README
-        readme_content = f"""# {project_name}
-
-This is a celline single cell analysis project.
-
-## Directory Structure
-
-- `data/`: Raw and processed data files
-- `results/`: Analysis results and outputs
-- `scripts/`: Custom analysis scripts
-- `setting.toml`: Project configuration
-- `samples.toml`: Sample configuration
-
-## Usage
-
-To run celline functions in this project:
-
-```bash
-cd {project_name}
-celline list  # List available functions
-celline run <function_name>  # Run a specific function
-```
-"""
-        (project_dir / "README.md").write_text(readme_content)
-        
-        console.print(f"[green]Project '{project_name}' initialized successfully![/green]")
-        console.print()
-        console.print("Next steps:")
-        console.print(f"  1. cd {project_name}")
-        console.print("  2. Edit samples.toml to configure your samples")
-        console.print("  3. Run 'celline list' to see available functions")
-        
+        initialize_func = Initialize()
+        initialize_func.call(None)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Initialization cancelled.[/yellow]")
     except Exception as e:
-        console.print(f"[red]Error creating project: {e}[/red]")
-        # Clean up on error
-        if project_dir.exists():
-            shutil.rmtree(project_dir)
+        console.print(f"[red]Error during initialization: {e}[/red]")
 
 
 def cmd_info(args: argparse.Namespace) -> None:
