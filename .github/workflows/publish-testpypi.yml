@@ -115,7 +115,3 @@ jobs:
         # TestPyPI に出したい場合は ↓ をアンコメント
         # with:
         #   repository-url: https://test.pypi.org/legacy/
-
-      # 6. バージョン確認用ログ
-      - name: Show final version
-        run: echo "Deployed version is: ${{ steps.parse_toml.outputs.version }}"
