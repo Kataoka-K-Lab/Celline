@@ -78,6 +78,7 @@ def cmd_help(args: argparse.Namespace) -> None:
         console.print("  run <function>      Run a specific function")
         console.print("  run interactive     Launch interactive web interface")
         console.print("  interactive         Launch interactive web interface")
+        console.print("  config              Configure execution settings (system, threads)")
         console.print("  info                Show system information")
         console.print("  api                 Start API server only (for testing)")
         console.print()
@@ -218,6 +219,7 @@ def cmd_config(args: argparse.Namespace) -> None:
     from celline.config import Config, Setting
     import os
     import toml
+    import inquirer
     
     # Set current directory as project directory if no setting.toml exists
     current_dir = os.getcwd()
@@ -275,16 +277,104 @@ def cmd_config(args: argparse.Namespace) -> None:
         Setting.flush()
         console.print("[green]Configuration saved successfully.[/green]")
     else:
-        # Show current configuration
-        console.print("[bold]Current Celline Configuration:[/bold]")
+        # Interactive configuration mode
+        console.print("[bold]🔧 Celline Configuration[/bold]")
         console.print()
-        console.print(f"Project name: {Setting.name}")
-        console.print(f"Version: {Setting.version}")
-        console.print(f"R path: {Setting.r_path}")
-        console.print(f"Wait time: {Setting.wait_time}")
-        console.print(f"Execution system: {Setting.system}")
-        console.print(f"Number of threads: {Setting.nthread}")
+        console.print("[dim]Current settings:[/dim]")
+        console.print(f"  Execution system: {Setting.system}")
+        console.print(f"  Number of threads: {Setting.nthread}")
         if Setting.pbs_server:
-            console.print(f"PBS server: {Setting.pbs_server}")
+            console.print(f"  PBS server: {Setting.pbs_server}")
         console.print()
-        console.print("Use --system, --nthread, or --pbs-server to modify settings.")
+        
+        try:
+            # Ask if user wants to modify settings
+            modify_question = [
+                inquirer.Confirm(
+                    name="modify",
+                    message="Do you want to modify the execution settings?",
+                    default=True
+                )
+            ]
+            modify_result = inquirer.prompt(modify_question, raise_keyboard_interrupt=True)
+            
+            if modify_result is None or not modify_result["modify"]:
+                console.print("[yellow]Configuration unchanged.[/yellow]")
+                return
+            
+            # Interactive system selection
+            system_question = [
+                inquirer.List(
+                    name="system",
+                    message="Select execution system",
+                    choices=[
+                        ("Multithreading (recommended for local execution)", "multithreading"),
+                        ("PBS (for cluster execution)", "PBS")
+                    ],
+                    default=Setting.system
+                )
+            ]
+            system_result = inquirer.prompt(system_question, raise_keyboard_interrupt=True)
+            
+            if system_result is None:
+                console.print("[yellow]Configuration cancelled.[/yellow]")
+                return
+                
+            new_system = system_result["system"]
+            
+            # Interactive thread count selection
+            thread_question = [
+                inquirer.Text(
+                    name="nthread",
+                    message="Enter number of threads (1-64)",
+                    default=str(Setting.nthread),
+                    validate=lambda _, x: x.isdigit() and 1 <= int(x) <= 64
+                )
+            ]
+            thread_result = inquirer.prompt(thread_question, raise_keyboard_interrupt=True)
+            
+            if thread_result is None:
+                console.print("[yellow]Configuration cancelled.[/yellow]")
+                return
+                
+            new_nthread = int(thread_result["nthread"])
+            
+            # PBS server configuration if PBS is selected
+            new_pbs_server = Setting.pbs_server
+            if new_system == "PBS":
+                pbs_question = [
+                    inquirer.Text(
+                        name="pbs_server",
+                        message="Enter PBS server name",
+                        default=Setting.pbs_server if Setting.pbs_server else "your-cluster-name"
+                    )
+                ]
+                pbs_result = inquirer.prompt(pbs_question, raise_keyboard_interrupt=True)
+                
+                if pbs_result is None:
+                    console.print("[yellow]Configuration cancelled.[/yellow]")
+                    return
+                    
+                new_pbs_server = pbs_result["pbs_server"]
+            
+            # Apply changes
+            Setting.system = new_system
+            Setting.nthread = new_nthread
+            Setting.pbs_server = new_pbs_server
+            
+            # Save configuration
+            Setting.flush()
+            
+            console.print()
+            console.print("[green]✅ Configuration updated successfully![/green]")
+            console.print()
+            console.print("[bold]New settings:[/bold]")
+            console.print(f"  Execution system: {Setting.system}")
+            console.print(f"  Number of threads: {Setting.nthread}")
+            if Setting.pbs_server:
+                console.print(f"  PBS server: {Setting.pbs_server}")
+            console.print()
+            console.print("[dim]These settings will be applied automatically when creating new Project instances.[/dim]")
+            
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Configuration cancelled by user.[/yellow]")
