@@ -33,14 +33,7 @@ class Initialize(CellineFunction):
             console.print("\n[red]R installation selection cancelled or failed.[/red]")
             return project
         
-        # Check and install R packages
-        console.print("\n" + "="*50)
-        if not DependencyValidator.validate_r_packages(selected_r_path, interactive=True):
-            console.print("\n[red]R package setup failed.[/red]")
-            console.print("[yellow]Please install the required R packages and run 'celline init' again.[/yellow]")
-            return project
-        
-        console.print("\n[green]All dependencies and R packages are ready! Proceeding with initialization...[/green]\n")
+        console.print("\n[green]All dependencies are ready! Proceeding with initialization...[/green]\n")
         
         settings = Setting()
         questions = [
@@ -49,10 +42,85 @@ class Initialize(CellineFunction):
         result = inquirer.prompt(questions, raise_keyboard_interrupt=True)
         if result is None:
             quit()
-        settings.name = result["projname"]
+        
+        project_name = result["projname"]
+        settings.name = project_name
         settings.r_path = selected_r_path
         settings.version = "0.1"
         settings.wait_time = 4
         settings.flush()
-        console.print("[green]Initialization completed successfully![/green]")
+        
+        # Create project files and directories
+        console.print("[cyan]Setting up project structure...[/cyan]")
+        
+        # Create data directory if it doesn't exist
+        import os
+        from pathlib import Path
+        
+        project_root = Path.cwd()
+        data_dir = project_root / "data"
+        results_dir = project_root / "results"
+        scripts_dir = project_root / "scripts"
+        
+        # Create directories
+        data_dir.mkdir(exist_ok=True)
+        results_dir.mkdir(exist_ok=True)  
+        scripts_dir.mkdir(exist_ok=True)
+        
+        # Create samples.toml if it doesn't exist
+        samples_file = project_root / "samples.toml"
+        if not samples_file.exists():
+            samples_content = f"""# Sample configuration for {project_name}
+# Add your samples here following this format:
+#
+# [samples.sample1]
+# name = "Sample 1"
+# path = "data/sample1"
+#
+# [samples.sample2] 
+# name = "Sample 2"
+# path = "data/sample2"
+
+# Example:
+# [samples.GSM123456]
+# name = "Control sample"
+# path = "data/GSM123456"
+"""
+            samples_file.write_text(samples_content)
+            console.print(f"[green]Created samples.toml[/green]")
+        
+        # Create setting.toml if it doesn't exist
+        setting_file = project_root / "setting.toml"
+        if not setting_file.exists():
+            setting_content = f"""[project]
+name = "{project_name}"
+version = "1.0.0"
+description = "Single cell analysis project"
+
+[analysis]
+# Analysis parameters go here
+# threads = 4
+# memory_limit = "8G"
+
+[paths]
+data_dir = "data"
+results_dir = "results"
+scripts_dir = "scripts"
+"""
+            setting_file.write_text(setting_content)
+            console.print(f"[green]Created setting.toml[/green]")
+        
+        console.print(f"[green]Project structure created:[/green]")
+        console.print(f"  📁 {data_dir.name}/     - Raw and processed data files")
+        console.print(f"  📁 {results_dir.name}/  - Analysis results and outputs")  
+        console.print(f"  📁 {scripts_dir.name}/  - Custom analysis scripts")
+        console.print(f"  📄 samples.toml   - Sample configuration")
+        console.print(f"  📄 setting.toml   - Project settings")
+        
+        console.print(f"\n[green]Initialization completed successfully![/green]")
+        console.print(f"\n[bold cyan]Next steps:[/bold cyan]")
+        console.print(f"  1. Edit samples.toml to configure your samples")
+        console.print(f"  2. Run 'celline list' to see available functions")
+        console.print(f"  3. Run 'celline run add <sample_id>' to add samples")
+        
         return project
