@@ -32,7 +32,7 @@ class DependencyValidator:
     
     REQUIRED_DEPENDENCIES = [
         "cellranger",
-        "rig",
+        "R",
         "fastq-dump"
     ]
     
@@ -80,10 +80,6 @@ class DependencyValidator:
                     for line in lines:
                         if "R version" in line:
                             return line.split()[2]
-            elif command == "rig":
-                result = subprocess.run([command, "--version"], capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
-                    return result.stdout.strip().split('\n')[0]
             elif command == "fastq-dump":
                 result = subprocess.run([command, "--version"], capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
@@ -128,12 +124,43 @@ class DependencyValidator:
     
     @staticmethod
     def install_r_packages(packages: List[str], r_path: Optional[str] = None) -> bool:
-        """Install R packages using rig-managed R installation."""
-        if r_path is None:
-            console.print("[red]R path is required for package installation[/red]")
-            return False
+        """Install R packages using pak."""
+        r_command = r_path if r_path else "R"
         
-        return DependencyValidator.install_r_packages_with_rig(r_path, packages)
+        console.print(f"[cyan]Installing R packages: {', '.join(packages)}[/cyan]")
+        
+        try:
+            # Create R script for package installation using pak (faster and more reliable)
+            packages_str = '", "'.join(packages)
+            r_script = f'''
+            # Install pak if not available
+            if (!require("pak", quietly = TRUE)) {{
+                install.packages("pak", repos = "https://cloud.r-project.org/")
+            }}
+            
+            # Install packages using pak
+            pak::pkg_install(c("{packages_str}"))
+            '''
+            
+            console.print("[cyan]Installing packages (this may take several minutes)...[/cyan]")
+            result = subprocess.run(
+                [r_command, "--slave", "--vanilla", "-e", r_script],
+                capture_output=True, text=True, timeout=1800  # 30 minutes timeout
+            )
+            
+            if result.returncode == 0:
+                console.print("[green]Successfully installed R packages![/green]")
+                return True
+            else:
+                console.print(f"[red]Failed to install R packages: {result.stderr}[/red]")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            console.print("[red]Installation timed out. Please install packages manually.[/red]")
+            return False
+        except Exception as e:
+            console.print(f"[red]Error during installation: {e}[/red]")
+            return False
     
     @classmethod
     def check_r_packages(cls, r_path: Optional[str] = None) -> List[RPackageCheck]:
@@ -255,9 +282,9 @@ class DependencyValidator:
             if show_details:
                 cls.display_installation_instructions(missing_deps)
         
-        # Check R packages even if other dependencies are missing, but only if rig is available
-        rig_available = any(check.name == "rig" and check.available for check in checks)
-        if check_r_packages and rig_available and r_path:
+        # Check R packages even if other dependencies are missing, but only if R is available
+        r_available = any(check.name == "R" and check.available for check in checks)
+        if check_r_packages and r_available and r_path:
             console.print("\n" + "="*50)
             r_packages_valid = cls.validate_r_packages(r_path, interactive=True)
             if not r_packages_valid:
@@ -307,24 +334,6 @@ class DependencyValidator:
                 console.print("  - CentOS/RHEL: sudo yum install R")
                 console.print("  - Or download from: https://cran.r-project.org/\n")
                 
-            elif dep.name == "rig":
-                console.print("  Installation: Install R Installation Manager (rig)")
-                console.print("  rig is a tool for managing multiple R versions")
-                console.print("")
-                console.print("  [bold cyan]Quick Installation:[/bold cyan]")
-                console.print("  - macOS:")
-                console.print("    curl -Ls https://github.com/r-lib/rig/releases/latest/download/rig-macos-latest.tar.gz | sudo tar xz -C /usr/local/bin")
-                console.print("  - Linux:")
-                console.print("    curl -Ls https://github.com/r-lib/rig/releases/latest/download/rig-linux-latest.tar.gz | sudo tar xz -C /usr/local/bin")
-                console.print("  - Windows: Download installer from GitHub releases")
-                console.print("")
-                console.print("  [bold cyan]Alternative Installation:[/bold cyan]")
-                console.print("  - Download from: https://github.com/r-lib/rig/releases")
-                console.print("  - macOS: Download .pkg installer")
-                console.print("  - Linux: Download .deb/.rpm package")
-                console.print("  - Windows: Download .exe installer")
-                console.print("")
-                console.print("  [bold yellow]After installation, verify with: rig --version[/bold yellow]\n")
                 
             elif dep.name == "fastq-dump":
                 console.print("  Installation: Install SRA Toolkit")
@@ -479,33 +488,33 @@ class DependencyValidator:
     
     @staticmethod
     def select_r_installation() -> Optional[str]:
-        """Interactive R installation selection using rig."""
+        """Interactive R installation selection."""
         console.print("\n[cyan]Selecting R installation...[/cyan]")
         
-        # Check if rig is available
-        rig_available = shutil.which("rig") is not None
-        
-        if not rig_available:
-            console.print("[red]rig is not available. Please install rig first.[/red]")
-            return None
-        
-        # Get existing rig installations
-        rig_installations = DependencyValidator.get_rig_installations()
+        # Get current R path
+        current_r = shutil.which("R")
         
         # Create choices for inquirer
         choices = []
         
-        # Add existing rig installations
-        for version, path in rig_installations:
-            choices.append(f"R {version} (rig) - {path}")
+        if current_r:
+            # Get version info for current R
+            try:
+                result = subprocess.run([current_r, "--version"], capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    lines = result.stdout.strip().split('\n')
+                    version = "Unknown"
+                    for line in lines:
+                        if "R version" in line:
+                            version = line.split()[2]
+                            break
+                    choices.append(f"Use current R installation (R {version}) - {current_r}")
+                else:
+                    choices.append(f"Use current R installation - {current_r}")
+            except:
+                choices.append(f"Use current R installation - {current_r}")
         
-        # Add option to create new environment
-        choices.extend([
-            "Create new R environment (latest release)",
-            "Create new R environment (devel)",
-            "Create new R environment (custom version)",
-            "Enter custom path manually"
-        ])
+        choices.append("Enter custom R path manually")
         
         # Use inquirer for selection
         questions = [
@@ -524,22 +533,7 @@ class DependencyValidator:
             
             selection = result['r_selection']
             
-            if selection == "Create new R environment (latest release)":
-                return DependencyValidator.create_rig_environment("release")
-            elif selection == "Create new R environment (devel)":
-                return DependencyValidator.create_rig_environment("devel")
-            elif selection == "Create new R environment (custom version)":
-                version_questions = [
-                    inquirer.Text(
-                        'r_version',
-                        message="Enter R version to install (e.g., 4.3.2, 4.4.0)"
-                    )
-                ]
-                version_result = inquirer.prompt(version_questions, raise_keyboard_interrupt=True)
-                if version_result is None:
-                    return None
-                return DependencyValidator.create_rig_environment(version_result['r_version'])
-            elif selection == "Enter custom path manually":
+            if selection == "Enter custom R path manually":
                 # Manual path input
                 manual_questions = [
                     inquirer.Path(
@@ -562,7 +556,7 @@ class DependencyValidator:
                     console.print(f"[red]Invalid R path: {manual_path}[/red]")
                     return None
             else:
-                # Extract actual path from rig installation selection
+                # Extract actual path from current R selection
                 if " - " in selection:
                     r_path = selection.split(" - ")[1]
                     console.print(f"[green]Selected R: {r_path}[/green]")

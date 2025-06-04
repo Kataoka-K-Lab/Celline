@@ -18,7 +18,7 @@ class Initialize(CellineFunction):
         # Check system dependencies first
         console.print("[cyan]Checking system dependencies...[/cyan]")
         
-        # First check all system dependencies (cellranger, rig, fastq-dump)
+        # First check all system dependencies (cellranger, R, fastq-dump)
         if not DependencyValidator.validate_dependencies(show_details=True, check_r_packages=False):
             console.print("\n[red]Initialization failed due to missing dependencies.[/red]")
             console.print("[yellow]Please install the required dependencies and run 'celline init' again.[/yellow]")
@@ -26,7 +26,7 @@ class Initialize(CellineFunction):
         
         console.print("\n[green]All system dependencies are available![/green]")
         
-        # Now select R installation using rig (rig is guaranteed to be available now)
+        # Now select R installation (R is guaranteed to be available now)
         console.print("\n[cyan]Setting up R environment...[/cyan]")
         selected_r_path = DependencyValidator.select_r_installation()
         if selected_r_path is None:
