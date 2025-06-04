@@ -48,6 +48,10 @@ class Project:
             Setting.r_path = get_r_path() if r_path == "" else r_path
             Setting.version = "0.01"
             Setting.wait_time = 4
+            # Initialize execution settings with defaults
+            Setting.system = "multithreading"
+            Setting.nthread = 1
+            Setting.pbs_server = ""
             Setting.flush()
         with open(f"{self.PROJ_PATH}/setting.toml", encoding="utf-8") as f:
             setting = toml.load(f)
@@ -55,6 +59,32 @@ class Project:
             Setting.r_path = setting["R"]["r_path"]
             Setting.version = setting["project"]["version"]
             Setting.wait_time = setting["fetch"]["wait_time"]
+            # Load execution settings
+            execution_settings = setting.get("execution", {})
+            Setting.system = execution_settings.get("system", "multithreading")
+            Setting.nthread = execution_settings.get("nthread", 1)
+            Setting.pbs_server = execution_settings.get("pbs_server", "")
+            
+        # Apply configuration settings automatically
+        self._apply_config_settings()
+
+    def _apply_config_settings(self):
+        """Apply configuration settings from setting.toml"""
+        # Apply system configuration
+        if Setting.system == "PBS":
+            if Setting.pbs_server:
+                self.usePBS(Setting.pbs_server)
+            else:
+                print("Warning: PBS system selected but no PBS server configured")
+                self.useMultiThreading()
+        else:  # Default to multithreading
+            self.useMultiThreading()
+        
+        # Apply thread configuration
+        if Setting.nthread > 1:
+            self.parallelize(Setting.nthread)
+        else:
+            self.singularize()
 
     @property
     def nthread(self) -> int:

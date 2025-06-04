@@ -211,3 +211,80 @@ def cmd_api(args: argparse.Namespace) -> None:
         import traceback
         if console.is_terminal:
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
+
+
+def cmd_config(args: argparse.Namespace) -> None:
+    """Configure celline settings."""
+    from celline.config import Config, Setting
+    import os
+    import toml
+    
+    # Set current directory as project directory if no setting.toml exists
+    current_dir = os.getcwd()
+    Config.PROJ_ROOT = current_dir
+    
+    # Load existing settings if available
+    setting_file = f"{current_dir}/setting.toml"
+    if os.path.isfile(setting_file):
+        with open(setting_file, encoding="utf-8") as f:
+            setting_data = toml.load(f)
+            Setting.name = setting_data.get("project", {}).get("name", "default")
+            Setting.version = setting_data.get("project", {}).get("version", "0.01")
+            Setting.wait_time = setting_data.get("fetch", {}).get("wait_time", 4)
+            Setting.r_path = setting_data.get("R", {}).get("r_path", "")
+            execution_settings = setting_data.get("execution", {})
+            Setting.system = execution_settings.get("system", "multithreading")
+            Setting.nthread = execution_settings.get("nthread", 1)
+            Setting.pbs_server = execution_settings.get("pbs_server", "")
+    else:
+        # Initialize default settings
+        Setting.name = "default"
+        Setting.version = "0.01"
+        Setting.wait_time = 4
+        Setting.r_path = ""
+        Setting.system = "multithreading"
+        Setting.nthread = 1
+        Setting.pbs_server = ""
+    
+    # Check if any config options are provided
+    config_changed = False
+    
+    if args.system:
+        if args.system not in ["multithreading", "PBS"]:
+            console.print("[red]Error: --system must be either 'multithreading' or 'PBS'[/red]")
+            return
+        Setting.system = args.system
+        config_changed = True
+        console.print(f"[green]System set to: {args.system}[/green]")
+    
+    if args.nthread:
+        if args.nthread < 1:
+            console.print("[red]Error: --nthread must be a positive integer[/red]")
+            return
+        Setting.nthread = args.nthread
+        config_changed = True
+        console.print(f"[green]Number of threads set to: {args.nthread}[/green]")
+    
+    if args.pbs_server:
+        Setting.pbs_server = args.pbs_server
+        config_changed = True
+        console.print(f"[green]PBS server set to: {args.pbs_server}[/green]")
+    
+    if config_changed:
+        # Save the updated configuration
+        Setting.flush()
+        console.print("[green]Configuration saved successfully.[/green]")
+    else:
+        # Show current configuration
+        console.print("[bold]Current Celline Configuration:[/bold]")
+        console.print()
+        console.print(f"Project name: {Setting.name}")
+        console.print(f"Version: {Setting.version}")
+        console.print(f"R path: {Setting.r_path}")
+        console.print(f"Wait time: {Setting.wait_time}")
+        console.print(f"Execution system: {Setting.system}")
+        console.print(f"Number of threads: {Setting.nthread}")
+        if Setting.pbs_server:
+            console.print(f"PBS server: {Setting.pbs_server}")
+        console.print()
+        console.print("Use --system, --nthread, or --pbs-server to modify settings.")
