@@ -129,10 +129,16 @@ def cmd_run(args: argparse.Namespace) -> None:
 def cmd_init(args: argparse.Namespace) -> None:
     """Initialize celline system configuration (same as 'celline run init')."""
     from celline.functions.initialize import Initialize
+    from celline import Project
+    import os
     
     try:
+        # Create a Project instance to properly initialize Config.PROJ_ROOT
+        current_dir = os.getcwd()
+        project = Project(current_dir)
+        
         initialize_func = Initialize()
-        initialize_func.call(None)
+        initialize_func.call(project)
     except KeyboardInterrupt:
         console.print("\n[yellow]Initialization cancelled.[/yellow]")
     except Exception as e:

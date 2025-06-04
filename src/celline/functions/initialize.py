@@ -1,7 +1,6 @@
-import subprocess
-
 import inquirer
 from rich.console import Console
+from pathlib import Path
 
 from celline.config import Setting
 from celline.functions._base import CellineFunction
@@ -54,8 +53,6 @@ class Initialize(CellineFunction):
         console.print("[cyan]Setting up project structure...[/cyan]")
         
         # Create data directory if it doesn't exist
-        import os
-        from pathlib import Path
         
         project_root = Path.cwd()
         data_dir = project_root / "data"
