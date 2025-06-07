@@ -42,6 +42,10 @@ class Setting:
     version: str
     wait_time: int
     r_path: str = ""
+    # New execution settings
+    system: str = "multithreading"  # "multithreading" or "PBS"
+    nthread: int = 1
+    pbs_server: str = ""
 
     # @staticmethod
     # def validate():
@@ -54,6 +58,11 @@ class Setting:
             "project": {"name": Setting.name, "version": Setting.version},
             "fetch": {"wait_time": Setting.wait_time},
             "R": {"r_path": Setting.r_path},
+            "execution": {
+                "system": Setting.system,
+                "nthread": Setting.nthread,
+                "pbs_server": Setting.pbs_server,
+            },
         }
 
     # @staticmethod

@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import List, Optional
 
-from celline.cli.commands import cmd_list, cmd_help, cmd_run, cmd_info, cmd_init, cmd_interactive, cmd_api
+from celline.cli.commands import cmd_list, cmd_help, cmd_run, cmd_info, cmd_init, cmd_interactive, cmd_api, cmd_config
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -39,6 +39,12 @@ def create_parser() -> argparse.ArgumentParser:
     
     # Info command
     info_parser = subparsers.add_parser('info', help='Show system information')
+    
+    # Config command
+    config_parser = subparsers.add_parser('config', help='Configure celline settings')
+    config_parser.add_argument('--system', choices=['multithreading', 'PBS'], help='Set execution system')
+    config_parser.add_argument('--nthread', type=int, help='Set number of threads')
+    config_parser.add_argument('--pbs-server', help='Set PBS server name (for PBS system)')
     
     # Interactive command
     interactive_parser = subparsers.add_parser('interactive', help='Launch interactive web interface')
@@ -78,6 +84,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 cmd_run(args)
         elif args.command == 'info':
             cmd_info(args)
+        elif args.command == 'config':
+            cmd_config(args)
         elif args.command == 'interactive':
             cmd_interactive(args)
         elif args.command == 'api':

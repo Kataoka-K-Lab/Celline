@@ -7,3 +7,8 @@ wait_time = 4
 
 [R]
 r_path = "/usr/local/bin/R"
+
+[execution]
+system = "multithreading"
+nthread = 2
+pbs_server = "test-pbs-cluster"

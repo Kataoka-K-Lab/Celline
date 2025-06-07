@@ -78,6 +78,7 @@ def cmd_help(args: argparse.Namespace) -> None:
         console.print("  run <function>      Run a specific function")
         console.print("  run interactive     Launch interactive web interface")
         console.print("  interactive         Launch interactive web interface")
+        console.print("  config              Configure execution settings (system, threads)")
         console.print("  info                Show system information")
         console.print("  api                 Start API server only (for testing)")
         console.print()
@@ -127,92 +128,22 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def cmd_init(args: argparse.Namespace) -> None:
-    """Initialize a new celline project."""
+    """Initialize celline system configuration (same as 'celline run init')."""
+    from celline.functions.initialize import Initialize
+    from celline import Project
     import os
-    import shutil
-    from pathlib import Path
-    
-    project_name = getattr(args, 'project_name', None)
-    if not project_name:
-        project_name = input("Enter project name: ").strip()
-        if not project_name:
-            console.print("[red]Project name is required.[/red]")
-            return
-    
-    project_dir = Path(project_name)
-    
-    if project_dir.exists():
-        console.print(f"[red]Directory '{project_name}' already exists.[/red]")
-        return
     
     try:
-        # Create project directory
-        project_dir.mkdir(parents=True)
-        console.print(f"[green]Created project directory: {project_name}[/green]")
+        # Create a Project instance to properly initialize Config.PROJ_ROOT
+        current_dir = os.getcwd()
+        project = Project(current_dir)
         
-        # Create basic project structure
-        (project_dir / "data").mkdir()
-        (project_dir / "results").mkdir()
-        (project_dir / "scripts").mkdir()
-        
-        # Create config files
-        setting_content = """[project]
-name = "{}"
-version = "1.0.0"
-description = "Single cell analysis project"
-
-[analysis]
-# Analysis parameters go here
-""".format(project_name)
-        
-        (project_dir / "setting.toml").write_text(setting_content)
-        
-        # Create sample config
-        samples_content = """# Sample configuration
-# Add your samples here following this format:
-# [samples.sample1]
-# name = "Sample 1"
-# path = "data/sample1"
-"""
-        (project_dir / "samples.toml").write_text(samples_content)
-        
-        # Create README
-        readme_content = f"""# {project_name}
-
-This is a celline single cell analysis project.
-
-## Directory Structure
-
-- `data/`: Raw and processed data files
-- `results/`: Analysis results and outputs
-- `scripts/`: Custom analysis scripts
-- `setting.toml`: Project configuration
-- `samples.toml`: Sample configuration
-
-## Usage
-
-To run celline functions in this project:
-
-```bash
-cd {project_name}
-celline list  # List available functions
-celline run <function_name>  # Run a specific function
-```
-"""
-        (project_dir / "README.md").write_text(readme_content)
-        
-        console.print(f"[green]Project '{project_name}' initialized successfully![/green]")
-        console.print()
-        console.print("Next steps:")
-        console.print(f"  1. cd {project_name}")
-        console.print("  2. Edit samples.toml to configure your samples")
-        console.print("  3. Run 'celline list' to see available functions")
-        
+        initialize_func = Initialize()
+        initialize_func.call(project)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Initialization cancelled.[/yellow]")
     except Exception as e:
-        console.print(f"[red]Error creating project: {e}[/red]")
-        # Clean up on error
-        if project_dir.exists():
-            shutil.rmtree(project_dir)
+        console.print(f"[red]Error during initialization: {e}[/red]")
 
 
 def cmd_info(args: argparse.Namespace) -> None:
@@ -281,3 +212,169 @@ def cmd_api(args: argparse.Namespace) -> None:
         import traceback
         if console.is_terminal:
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
+
+
+def cmd_config(args: argparse.Namespace) -> None:
+    """Configure celline settings."""
+    from celline.config import Config, Setting
+    import os
+    import toml
+    import inquirer
+    
+    # Set current directory as project directory if no setting.toml exists
+    current_dir = os.getcwd()
+    Config.PROJ_ROOT = current_dir
+    
+    # Load existing settings if available
+    setting_file = f"{current_dir}/setting.toml"
+    if os.path.isfile(setting_file):
+        with open(setting_file, encoding="utf-8") as f:
+            setting_data = toml.load(f)
+            Setting.name = setting_data.get("project", {}).get("name", "default")
+            Setting.version = setting_data.get("project", {}).get("version", "0.01")
+            Setting.wait_time = setting_data.get("fetch", {}).get("wait_time", 4)
+            Setting.r_path = setting_data.get("R", {}).get("r_path", "")
+            execution_settings = setting_data.get("execution", {})
+            Setting.system = execution_settings.get("system", "multithreading")
+            Setting.nthread = execution_settings.get("nthread", 1)
+            Setting.pbs_server = execution_settings.get("pbs_server", "")
+    else:
+        # Initialize default settings
+        Setting.name = "default"
+        Setting.version = "0.01"
+        Setting.wait_time = 4
+        Setting.r_path = ""
+        Setting.system = "multithreading"
+        Setting.nthread = 1
+        Setting.pbs_server = ""
+    
+    # Check if any config options are provided
+    config_changed = False
+    
+    if args.system:
+        if args.system not in ["multithreading", "PBS"]:
+            console.print("[red]Error: --system must be either 'multithreading' or 'PBS'[/red]")
+            return
+        Setting.system = args.system
+        config_changed = True
+        console.print(f"[green]System set to: {args.system}[/green]")
+    
+    if args.nthread:
+        if args.nthread < 1:
+            console.print("[red]Error: --nthread must be a positive integer[/red]")
+            return
+        Setting.nthread = args.nthread
+        config_changed = True
+        console.print(f"[green]Number of threads set to: {args.nthread}[/green]")
+    
+    if args.pbs_server:
+        Setting.pbs_server = args.pbs_server
+        config_changed = True
+        console.print(f"[green]PBS server set to: {args.pbs_server}[/green]")
+    
+    if config_changed:
+        # Save the updated configuration
+        Setting.flush()
+        console.print("[green]Configuration saved successfully.[/green]")
+    else:
+        # Interactive configuration mode
+        console.print("[bold]🔧 Celline Configuration[/bold]")
+        console.print()
+        console.print("[dim]Current settings:[/dim]")
+        console.print(f"  Execution system: {Setting.system}")
+        console.print(f"  Number of threads: {Setting.nthread}")
+        if Setting.pbs_server:
+            console.print(f"  PBS server: {Setting.pbs_server}")
+        console.print()
+        
+        try:
+            # Ask if user wants to modify settings
+            modify_question = [
+                inquirer.Confirm(
+                    name="modify",
+                    message="Do you want to modify the execution settings?",
+                    default=True
+                )
+            ]
+            modify_result = inquirer.prompt(modify_question, raise_keyboard_interrupt=True)
+            
+            if modify_result is None or not modify_result["modify"]:
+                console.print("[yellow]Configuration unchanged.[/yellow]")
+                return
+            
+            # Interactive system selection
+            system_question = [
+                inquirer.List(
+                    name="system",
+                    message="Select execution system",
+                    choices=[
+                        ("Multithreading (recommended for local execution)", "multithreading"),
+                        ("PBS (for cluster execution)", "PBS")
+                    ],
+                    default=Setting.system
+                )
+            ]
+            system_result = inquirer.prompt(system_question, raise_keyboard_interrupt=True)
+            
+            if system_result is None:
+                console.print("[yellow]Configuration cancelled.[/yellow]")
+                return
+                
+            new_system = system_result["system"]
+            
+            # Interactive thread count selection
+            thread_question = [
+                inquirer.Text(
+                    name="nthread",
+                    message="Enter number of threads (1-64)",
+                    default=str(Setting.nthread),
+                    validate=lambda _, x: x.isdigit() and 1 <= int(x) <= 64
+                )
+            ]
+            thread_result = inquirer.prompt(thread_question, raise_keyboard_interrupt=True)
+            
+            if thread_result is None:
+                console.print("[yellow]Configuration cancelled.[/yellow]")
+                return
+                
+            new_nthread = int(thread_result["nthread"])
+            
+            # PBS server configuration if PBS is selected
+            new_pbs_server = Setting.pbs_server
+            if new_system == "PBS":
+                pbs_question = [
+                    inquirer.Text(
+                        name="pbs_server",
+                        message="Enter PBS server name",
+                        default=Setting.pbs_server if Setting.pbs_server else "your-cluster-name"
+                    )
+                ]
+                pbs_result = inquirer.prompt(pbs_question, raise_keyboard_interrupt=True)
+                
+                if pbs_result is None:
+                    console.print("[yellow]Configuration cancelled.[/yellow]")
+                    return
+                    
+                new_pbs_server = pbs_result["pbs_server"]
+            
+            # Apply changes
+            Setting.system = new_system
+            Setting.nthread = new_nthread
+            Setting.pbs_server = new_pbs_server
+            
+            # Save configuration
+            Setting.flush()
+            
+            console.print()
+            console.print("[green]✅ Configuration updated successfully![/green]")
+            console.print()
+            console.print("[bold]New settings:[/bold]")
+            console.print(f"  Execution system: {Setting.system}")
+            console.print(f"  Number of threads: {Setting.nthread}")
+            if Setting.pbs_server:
+                console.print(f"  PBS server: {Setting.pbs_server}")
+            console.print()
+            console.print("[dim]These settings will be applied automatically when creating new Project instances.[/dim]")
+            
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Configuration cancelled by user.[/yellow]")
