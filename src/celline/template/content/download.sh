@@ -1,7 +1,7 @@
 #!/bin/bash
 #PBS -S /bin/bash
-#PBS -l nodes=1:ppn=%nthread/:%cluster_server/
-#PBS -q %cluster_server/
+#PBS -l nodes=1:ppn=%nthread/%cluster_server_directive/
+#PBS -q %queue_directive/
 #PBS -N %jobname/
 #PBS -j eo
 #PBS -m ae
