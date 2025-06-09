@@ -166,6 +166,7 @@ class ThreadObservable:
                 return first_value
 
         def thenHandler(output: str, script: ThreadObservable.ObservableShell):
+            print(f"[DEBUG] thenHandler called for script: {script.script_path}")
             script.then(output)
             next_script = get_first()
             if next_script is not None:
@@ -174,6 +175,7 @@ class ThreadObservable:
                 ).catch(lambda reason: catchHandler(reason, next_script))
 
         def catchHandler(reason: str, script: ThreadObservable.ObservableShell):
+            print(f"[DEBUG] catchHandler called for script: {script.script_path}, reason: {reason}")
             script.catch(reason)
             next_script = get_first()
             if next_script is not None:
@@ -182,13 +184,20 @@ class ThreadObservable:
                 ).catch(lambda reason: catchHandler(reason, next_script))
 
         # 最初のnjobs個のスクリプトを実行
-        for _ in range(min(ThreadObservable._jobs, len(cls.__running_jobs))):
+        for i in range(min(ThreadObservable._jobs, len(cls.__running_jobs))):
             script = get_first()
             if script is not None:
+                print(f"[DEBUG] Starting job {i+1}: {script.script_path}")
                 script.job = Shell.execute(script.script_path, job_type)
+                print(f"[DEBUG] Job created, finished: {script.job._finished}, callback_executed: {script.job.callback_executed}")
+                
                 script.job.then(partial(thenHandler, script=script)).catch(
                     partial(catchHandler, script=script),
                 )
+                print(f"[DEBUG] Callbacks set, finished: {script.job._finished}, callback_executed: {script.job.callback_executed}")
+                
+                if script.job._finished:
+                    print(f"[DEBUG] Job {i+1} is already finished!")
         cls.watch()
         return cls
 

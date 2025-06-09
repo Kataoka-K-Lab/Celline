@@ -149,13 +149,18 @@ class Shell:
             except FileNotFoundError:
                 raise FileNotFoundError(f"Script file not found: {bash_path}")
 
-        rc_file = "~/.bashrc" if "bash" in cls.DEFAULT_SHELL else "~/.zshrc"
         if job_system == ServerSystem.JobType.MultiThreading:
             bash_path = f"bash {bash_path}"
+            rich.print(f"[cyan]DEBUG: MultiThreading command: {bash_path}[/cyan]")
         else:
-            qsub_command = f"source {rc_file} && qsub {bash_path}"
+            # PBSの場合は環境変数の読み込みを簡素化
+            qsub_command = f"qsub {bash_path}"
             rich.print(f"[cyan]DEBUG: PBS command to execute: {qsub_command}[/cyan]")
+            rich.print(f"[cyan]DEBUG: Target script: {bash_path}[/cyan]")
+            rich.print(f"[cyan]DEBUG: Shell: {cls.DEFAULT_SHELL}[/cyan]")
             bash_path = qsub_command
+            
+        rich.print(f"[cyan]DEBUG: Creating Popen with command: {bash_path}[/cyan]")
         process = Popen(
             bash_path,
             shell=True,
@@ -163,13 +168,35 @@ class Shell:
             stderr=PIPE,
             executable=cls.DEFAULT_SHELL,
         )
+        rich.print(f"[cyan]DEBUG: Popen created, PID: {process.pid}[/cyan]")
+        # ジョブ作成前にプロセスの状態をチェック
+        process_poll = process.poll()
+        rich.print(f"[cyan]DEBUG: Process poll before job creation: {process_poll}[/cyan]")
+        
         job = cls._Job(process, job_system)
+        rich.print(f"[cyan]DEBUG: Job created, finished: {job._finished}, job_id: {job.job_id}[/cyan]")
+        
+        # ジョブ作成後のプロセス状態をチェック
+        process_poll_after = process.poll()
+        rich.print(f"[cyan]DEBUG: Process poll after job creation: {process_poll_after}[/cyan]")
+        
+        if job_system == ServerSystem.JobType.PBS and process_poll_after is not None:
+            rich.print(f"[bold red]WARNING: PBS qsub process already terminated with return code {process_poll_after}[/bold red]")
+            # qsubプロセスが既に終了している場合、即座にPBSチェックを実行
+            job._pbs_initial_check()
+        
         cls._job_queue.put(job)
+        rich.print(f"[cyan]DEBUG: Job added to queue[/cyan]")
+        
         if not cls._watcher_started:
+            rich.print(f"[cyan]DEBUG: Starting watcher thread[/cyan]")
             watcher_thread = threading.Thread(target=cls._watch_jobs)
             watcher_thread.daemon = True  # Here we set daemon
             watcher_thread.start()
             cls._watcher_started = True
+        else:
+            rich.print(f"[cyan]DEBUG: Watcher already started[/cyan]")
+            
         return job
 
     @classmethod
