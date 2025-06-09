@@ -35,8 +35,8 @@ class Shell:
             self._output: bytes | None = None
             self._error: bytes | None = None
             self._callback_executed = False
-            if self.job_system == ServerSystem.JobType.PBS:
-                self._pbs_initial_check()
+            self._pbs_checked = False
+            # PBSジョブのID取得は後で非同期で実行
 
         @property
         def job_id(self):
@@ -48,13 +48,29 @@ class Shell:
 
         def _pbs_initial_check(self):
             """Performs an initial check for PBS job type."""
+            if self._pbs_checked:
+                return
+                
+            # qsubプロセスが終了しているかチェック
+            if self.process.poll() is None:
+                # まだ実行中の場合は待機
+                return
+                
+            self._pbs_checked = True
+            rich.print("[cyan]DEBUG: Starting PBS initial check...[/cyan]")
             stdout, stderr = self.process.communicate()
+            rich.print(f"[cyan]DEBUG: qsub process returncode: {self.process.returncode}[/cyan]")
+            rich.print(f"[cyan]DEBUG: qsub stdout: '{stdout.decode('utf-8')}'[/cyan]")
+            rich.print(f"[cyan]DEBUG: qsub stderr: '{stderr.decode('utf-8')}'[/cyan]")
+            
             if self.process.returncode == 0:
                 match = re.search(r"(\d+)\..*", stdout.decode("utf-8"))
                 if match:
                     self._job_id = match.group(1)
+                    rich.print(f"[green]DEBUG: Extracted PBS job ID: {self._job_id}[/green]")
                 else:
                     rich.print(f"[bold yellow]Warning: Could not extract job ID from qsub output: {stdout.decode('utf-8')}[/]")
+                    rich.print("[bold yellow]DEBUG: Setting job as finished due to failed job ID extraction[/bold yellow]")
                     self._finished = True
                     self._returncode = 1
                     self._error = b"Failed to extract PBS job ID"
@@ -62,6 +78,7 @@ class Shell:
                 rich.print(f"[bold red]PBS qsub failed with return code {self.process.returncode}[/]")
                 rich.print(f"[bold red]stdout: {stdout.decode('utf-8')}[/]")
                 rich.print(f"[bold red]stderr: {stderr.decode('utf-8')}[/]")
+                rich.print("[bold red]DEBUG: Setting job as finished due to qsub failure[/bold red]")
                 self._finished = True
                 self._returncode = self.process.returncode
                 self._error = stderr
@@ -133,7 +150,12 @@ class Shell:
                 raise FileNotFoundError(f"Script file not found: {bash_path}")
 
         rc_file = "~/.bashrc" if "bash" in cls.DEFAULT_SHELL else "~/.zshrc"
-        bash_path = f"bash {bash_path}" if job_system == ServerSystem.JobType.MultiThreading else f"source {rc_file} && qsub {bash_path}"
+        if job_system == ServerSystem.JobType.MultiThreading:
+            bash_path = f"bash {bash_path}"
+        else:
+            qsub_command = f"source {rc_file} && qsub {bash_path}"
+            rich.print(f"[cyan]DEBUG: PBS command to execute: {qsub_command}[/cyan]")
+            bash_path = qsub_command
         process = Popen(
             bash_path,
             shell=True,
@@ -176,12 +198,20 @@ class Shell:
         """Handles watching a PBS job, checking its status and executing its callback function when it finishes."""
         # すでに完了しているかエラーが発生している場合は監視を終了
         if job._finished:
+            rich.print(f"[yellow]DEBUG: PBS job already finished, stopping monitoring[/yellow]")
             return
 
-        # ジョブIDが取得できていない場合は失敗として処理
+        # PBS初期チェックを実行
+        if not job._pbs_checked:
+            job._pbs_initial_check()
+            if job._finished:
+                return
+            
+        # ジョブIDがまだ取得できていない場合はしばらく待機
         if job.job_id is None:
-            rich.print("[bold red]PBS job ID is None. Job submission likely failed.[/]")
-            job.set_job_state(returncode=1, output=None, error=b"PBS job ID is None", finished=True)
+            if job._pbs_checked:
+                rich.print("[bold red]PBS job ID is None after checking. Job submission likely failed.[/]")
+                job.set_job_state(returncode=1, output=None, error=b"PBS job ID is None", finished=True)
             return
 
         with subprocess.Popen(

@@ -1,27 +1,30 @@
 from __future__ import annotations
-from typing import List, Final, Callable, Union, Dict, Optional, Any
-import uuid
-from functools import partial
-import time
-from celline.middleware.shell import Shell
+
 import queue
-import threading
 import subprocess
-from celline.server import ServerSystem
+import threading
+import time
+import uuid
+from collections.abc import Callable
+from functools import partial
+from typing import Any, Dict, Final, List, Optional, Union
+
 from rich.progress import (
-    Progress,
-    TextColumn,
     BarColumn,
-    TimeRemainingColumn,
-    TimeElapsedColumn,
-    TaskID,
+    Progress,
     SpinnerColumn,
+    TaskID,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
 )
+
+from celline.middleware.shell import Shell
+from celline.server import ServerSystem
 
 
 class ThreadObservable:
-    """
-    ## ThreadObservable class handles multiple shell scripts execution using threads.
+    """## ThreadObservable class handles multiple shell scripts execution using threads.
 
     Attributes:
         `ObservableShell`: NamedTuple representing a shell script to be observed.
@@ -29,25 +32,24 @@ class ThreadObservable:
     Note:
         If you are calling this class from Jupyter Notebook, remember to call the `watch` function
         to ensure all the scripts get executed.
+
     """
 
     progress_tasks: dict[str, TaskID] = {}
 
     class ObservableShell:
-        """
-        ## Observable shell which used in thread observable
-        """
+        """## Observable shell which used in thread observable"""
 
         script_path: str
         then: Callable[[str], None]
         catch: Callable[[str], None]
-        job: Optional[Shell._Job] = None
+        job: Shell._Job | None = None
 
         def __init__(
             self,
             script_path: str,
-            then: Callable[[str], Optional[Any]],
-            catch: Callable[[str], Optional[Any]],
+            then: Callable[[str], Any | None],
+            catch: Callable[[str], Any | None],
         ):
             self.script_path = script_path
             self.then = then
@@ -56,43 +58,39 @@ class ThreadObservable:
 
     _jobs: int = 1
     wait_for_complete: bool = True
-    __running_jobs: Dict[str, ObservableShell] = {}
+    __running_jobs: dict[str, ObservableShell] = {}
     __queue: queue.Queue = queue.Queue()
     __lock: threading.Lock = threading.Lock()
 
     @classmethod
     def set_jobs(cls, njobs: int):
-        """
-        #### Set numbre of jobs
-        """
+        """#### Set numbre of jobs"""
         ThreadObservable._jobs = njobs
         return cls
 
     @classmethod
     @property
     def njobs(cls) -> int:
-        """
-        #### Numbre of jobs
-        """
+        """#### Numbre of jobs"""
         return cls._jobs
 
     logging = True
     progress: Progress
-    shell_ctrl: Optional[Union[List[str], List[ObservableShell]]] = None
+    shell_ctrl: list[str] | list[ObservableShell] | None = None
 
     @classmethod
     def call_shell(
         cls,
-        shell_ctrl: Union[List[str], List[ObservableShell]],
-        proc_name: Optional[str] = None,
+        shell_ctrl: list[str] | list[ObservableShell],
+        proc_name: str | None = None,
         logging=True,
     ):
-        """
-        #### Execute shell scripts using threads.
+        """#### Execute shell scripts using threads.
 
         Args:
             `shell_ctrl<Union[List[str], List[ObservableShell]]>`: List of shell scripts or observable shell objects to be executed.\n
             `job_type<Shell.JobType -optional>`: Type of job execution (single-threaded or multi-threaded). Defaults to Shell.JobType.MultiThreading.
+
         """
         cls.logging = logging
         if proc_name is None:
@@ -112,8 +110,8 @@ class ThreadObservable:
 
         def handler(
             _hased_id: str,
-            defaultcall: Optional[Callable[[str], None]] = None,
-            arg: Optional[str] = None,
+            defaultcall: Callable[[str], None] | None = None,
+            arg: str | None = None,
         ):
             with cls.__lock:
                 if _hased_id in cls.__running_jobs:
@@ -131,26 +129,32 @@ class ThreadObservable:
                         lambda _, h_id=hashedid: handler(h_id),
                     )
                     cls.__queue.put(hashedid)
-            else:
-                # 'then'と'catch'が存在することを確認する
-                if hasattr(shell, "then") and hasattr(shell, "catch"):
-                    with cls.__lock:
-                        cls.__running_jobs[hashedid] = ThreadObservable.ObservableShell(
-                            shell.script_path,
-                            lambda out, h_id=hashedid, s=shell: handler(
-                                h_id, s.then, out
-                            ),
-                            lambda err, h_id=hashedid, s=shell: handler(
-                                h_id, s.catch, err
-                            ),
-                        )
-                        cls.__queue.put(hashedid)
-                else:
-                    raise ValueError(
-                        "'shell' object must have 'then' and 'catch' attributes"
+            # 'then'と'catch'が存在することを確認する
+            elif hasattr(shell, "then") and hasattr(shell, "catch"):
+                with cls.__lock:
+                    cls.__running_jobs[hashedid] = ThreadObservable.ObservableShell(
+                        shell.script_path,
+                        lambda out, h_id=hashedid, s=shell: handler(
+                            h_id,
+                            s.then,
+                            out,
+                        ),
+                        lambda err, h_id=hashedid, s=shell: handler(
+                            h_id,
+                            s.catch,
+                            err,
+                        ),
                     )
+                    cls.__queue.put(hashedid)
+            else:
+                raise ValueError(
+                    "'shell' object must have 'then' and 'catch' attributes",
+                )
         cls.progress_tasks["all_tasks"] = cls.progress.add_task(
-            "run", total=len(shell_ctrl) * 100, status="Running Jobs", icon="🚀"
+            "run",
+            total=len(shell_ctrl) * 100,
+            status="Running Jobs",
+            icon="🚀",
         )
 
         def get_first():
@@ -166,7 +170,7 @@ class ThreadObservable:
             next_script = get_first()
             if next_script is not None:
                 Shell.execute(next_script.script_path, job_type).then(
-                    partial(thenHandler, script=next_script)
+                    partial(thenHandler, script=next_script),
                 ).catch(lambda reason: catchHandler(reason, next_script))
 
         def catchHandler(reason: str, script: ThreadObservable.ObservableShell):
@@ -174,7 +178,7 @@ class ThreadObservable:
             next_script = get_first()
             if next_script is not None:
                 Shell.execute(next_script.script_path, job_type).then(
-                    partial(thenHandler, script=next_script)
+                    partial(thenHandler, script=next_script),
                 ).catch(lambda reason: catchHandler(reason, next_script))
 
         # 最初のnjobs個のスクリプトを実行
@@ -183,7 +187,7 @@ class ThreadObservable:
             if script is not None:
                 script.job = Shell.execute(script.script_path, job_type)
                 script.job.then(partial(thenHandler, script=script)).catch(
-                    partial(catchHandler, script=script)
+                    partial(catchHandler, script=script),
                 )
         cls.watch()
         return cls
@@ -218,7 +222,7 @@ class ThreadObservable:
                         status="Interrupted",
                     )
                     print(
-                        "\nKeyboard interrupt received. Attempting to terminate running jobs."
+                        "\nKeyboard interrupt received. Attempting to terminate running jobs.",
                     )
 
                     for hashed_id, observable_shell in cls.__running_jobs.items():
@@ -227,10 +231,7 @@ class ThreadObservable:
                         if job:
                             # if the job is running under PBS system
                             if job.job is not None:
-                                if (
-                                    job.job.job_system == ServerSystem.JobType.PBS
-                                    and job.job.job_id
-                                ):
+                                if job.job.job_system == ServerSystem.JobType.PBS and job.job.job_id:
                                     with subprocess.Popen(
                                         f"qdel {job.job.job_id}",
                                         shell=True,
