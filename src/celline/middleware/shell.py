@@ -57,20 +57,14 @@ class Shell:
                 return
                 
             self._pbs_checked = True
-            rich.print("[cyan]DEBUG: Starting PBS initial check...[/cyan]")
             stdout, stderr = self.process.communicate()
-            rich.print(f"[cyan]DEBUG: qsub process returncode: {self.process.returncode}[/cyan]")
-            rich.print(f"[cyan]DEBUG: qsub stdout: '{stdout.decode('utf-8')}'[/cyan]")
-            rich.print(f"[cyan]DEBUG: qsub stderr: '{stderr.decode('utf-8')}'[/cyan]")
             
             if self.process.returncode == 0:
                 match = re.search(r"(\d+)\..*", stdout.decode("utf-8"))
                 if match:
                     self._job_id = match.group(1)
-                    rich.print(f"[green]DEBUG: Extracted PBS job ID: {self._job_id}[/green]")
                 else:
                     rich.print(f"[bold yellow]Warning: Could not extract job ID from qsub output: {stdout.decode('utf-8')}[/]")
-                    rich.print("[bold yellow]DEBUG: Setting job as finished due to failed job ID extraction[/bold yellow]")
                     self._finished = True
                     self._returncode = 1
                     self._error = b"Failed to extract PBS job ID"
@@ -78,7 +72,6 @@ class Shell:
                 rich.print(f"[bold red]PBS qsub failed with return code {self.process.returncode}[/]")
                 rich.print(f"[bold red]stdout: {stdout.decode('utf-8')}[/]")
                 rich.print(f"[bold red]stderr: {stderr.decode('utf-8')}[/]")
-                rich.print("[bold red]DEBUG: Setting job as finished due to qsub failure[/bold red]")
                 self._finished = True
                 self._returncode = self.process.returncode
                 self._error = stderr
@@ -151,16 +144,10 @@ class Shell:
 
         if job_system == ServerSystem.JobType.MultiThreading:
             bash_path = f"bash {bash_path}"
-            rich.print(f"[cyan]DEBUG: MultiThreading command: {bash_path}[/cyan]")
         else:
-            # PBSの場合は環境変数の読み込みを簡素化
             qsub_command = f"qsub {bash_path}"
-            rich.print(f"[cyan]DEBUG: PBS command to execute: {qsub_command}[/cyan]")
-            rich.print(f"[cyan]DEBUG: Target script: {bash_path}[/cyan]")
-            rich.print(f"[cyan]DEBUG: Shell: {cls.DEFAULT_SHELL}[/cyan]")
             bash_path = qsub_command
             
-        rich.print(f"[cyan]DEBUG: Creating Popen with command: {bash_path}[/cyan]")
         process = Popen(
             bash_path,
             shell=True,
@@ -168,34 +155,20 @@ class Shell:
             stderr=PIPE,
             executable=cls.DEFAULT_SHELL,
         )
-        rich.print(f"[cyan]DEBUG: Popen created, PID: {process.pid}[/cyan]")
-        # ジョブ作成前にプロセスの状態をチェック
-        process_poll = process.poll()
-        rich.print(f"[cyan]DEBUG: Process poll before job creation: {process_poll}[/cyan]")
         
         job = cls._Job(process, job_system)
-        rich.print(f"[cyan]DEBUG: Job created, finished: {job._finished}, job_id: {job.job_id}[/cyan]")
         
-        # ジョブ作成後のプロセス状態をチェック
-        process_poll_after = process.poll()
-        rich.print(f"[cyan]DEBUG: Process poll after job creation: {process_poll_after}[/cyan]")
-        
-        if job_system == ServerSystem.JobType.PBS and process_poll_after is not None:
-            rich.print(f"[bold red]WARNING: PBS qsub process already terminated with return code {process_poll_after}[/bold red]")
-            # qsubプロセスが既に終了している場合、即座にPBSチェックを実行
+        # PBS job の初期チェック
+        if job_system == ServerSystem.JobType.PBS and process.poll() is not None:
             job._pbs_initial_check()
         
         cls._job_queue.put(job)
-        rich.print(f"[cyan]DEBUG: Job added to queue[/cyan]")
         
         if not cls._watcher_started:
-            rich.print(f"[cyan]DEBUG: Starting watcher thread[/cyan]")
             watcher_thread = threading.Thread(target=cls._watch_jobs)
-            watcher_thread.daemon = True  # Here we set daemon
+            watcher_thread.daemon = False  # Make it non-daemon to keep process alive
             watcher_thread.start()
             cls._watcher_started = True
-        else:
-            rich.print(f"[cyan]DEBUG: Watcher already started[/cyan]")
             
         return job
 
@@ -213,11 +186,16 @@ class Shell:
     @classmethod
     def _watch_job(cls, job: Shell._Job):
         """Watches a single job and executes its callback function when it finishes."""
-        while not job.callback_executed:
+        while not job.callback_executed and not job._finished:
             if job.job_system == ServerSystem.JobType.PBS:
                 cls._handle_pbs_job(job)
             else:
                 cls._handle_generic_job(job)
+            
+            # Exit early if job is finished to prevent infinite loop
+            if job._finished:
+                break
+                
             time.sleep(0.5)
 
     @classmethod
@@ -225,7 +203,6 @@ class Shell:
         """Handles watching a PBS job, checking its status and executing its callback function when it finishes."""
         # すでに完了しているかエラーが発生している場合は監視を終了
         if job._finished:
-            rich.print(f"[yellow]DEBUG: PBS job already finished, stopping monitoring[/yellow]")
             return
 
         # PBS初期チェックを実行

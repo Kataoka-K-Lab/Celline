@@ -10,5 +10,5 @@ r_path = "/usr/local/bin/R"
 
 [execution]
 system = "multithreading"
-nthread = 2
-pbs_server = "test-pbs-cluster"
+nthread = 1
+pbs_server = "test-cluster"
