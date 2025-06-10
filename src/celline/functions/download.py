@@ -82,16 +82,14 @@ class Download(CellineFunction):
                 if os.path.exists(path.resources_sample_raw_fastqs):
                     shutil.rmtree(path.resources_sample_raw_fastqs)
                 # PBS用のディレクティブを生成
-                cluster_server_directive = ""
-                queue_directive = ""
-                if ServerSystem.cluster_server_name is not None and ServerSystem.cluster_server_name.strip() != "":
-                    cluster_server_directive = f":{ServerSystem.cluster_server_name}"
-                    queue_directive = ServerSystem.cluster_server_name
+                cluster_server_name = ServerSystem.cluster_server_name or ""
+                cluster_server_directive = f":{cluster_server_name}" if cluster_server_name else ""
+                queue_directive = cluster_server_name if cluster_server_name else "default"
 
                 job_container = Download.JobContainer(
                     filetype=filetype,
                     nthread=str(self.nthread),
-                    cluster_server=ServerSystem.cluster_server_name or "",
+                    cluster_server=cluster_server_name,
                     cluster_server_directive=cluster_server_directive,
                     queue_directive=queue_directive,
                     jobname="Download",
