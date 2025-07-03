@@ -1,0 +1,8 @@
+cff-version: 0.1.15
+message: "Cite as"
+authors:
+  - family-names: Sato
+    given-names: Yuya
+    affiliation: "The University of Waseda"
+title: "Celline"
+doi: 10.5281/zenodo.15795373
