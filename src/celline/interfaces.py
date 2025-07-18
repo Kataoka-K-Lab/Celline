@@ -40,7 +40,7 @@ class Project:
             return os.path.basename(project_dir)
 
         self.EXEC_PATH = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-        self.PROJ_PATH = project_dir
+        self.PROJ_PATH = os.path.abspath(project_dir)
         Config.EXEC_ROOT = self.EXEC_PATH
         Config.PROJ_ROOT = self.PROJ_PATH
         if not os.path.isfile(f"{self.PROJ_PATH}/setting.toml"):

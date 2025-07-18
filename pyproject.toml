@@ -1,8 +1,9 @@
 [project]
 name = "celline"
-version = "0.1.15"
-description = "Add your description here"
+version = "0.1.16"
+description = "Celline - A comprehensive toolkit for single-cell RNA sequencing data analysis"
 readme = "README.md"
+license = { text = "MIT" }
 authors = [
     { name = "YUYA556223", email = "yuya.sato.jp@gmail.com" }
 ]
@@ -47,6 +48,7 @@ packages = ["src/celline"]
 include = [
     "/src",
     "/README.md",
+    "/LICENSE",
     "/pyproject.toml"
 ]
 

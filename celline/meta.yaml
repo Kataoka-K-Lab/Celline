@@ -1,0 +1,66 @@
+{% set name = "celline" %}
+{% set version = "0.1.15" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://pypi.org/packages/source/{{ name[0] }}/{{ name }}/celline-{{ version }}.tar.gz
+  sha256: 302a4817b2abe9175e53b20ce137b4b04b4e6507e886ed47e0e666d1a7ca030d
+
+build:
+  entry_points:
+    - celline = celline.cli.main:main
+  noarch: python
+  script: {{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation
+  number: 0
+
+requirements:
+  host:
+    - python >=3.10
+    - hatchling
+    - pip
+  run:
+    - python >=3.10
+    - argparse >=1.4.0
+    - continuousvi >=0.1.5
+    - fastapi >=0.104.0
+    - inquirer >=3.4.0
+    - iprogress >=0.4
+    - ipywidgets >=8.1.5
+    - multipledispatch >=1.0.0
+    - pandas >=2.2.3
+    - polars >=1.26.0
+    - pyarrow >=19.0.1
+    - pydantic >=2.5.0
+    - pyper >=1.1.2
+    - pysradb >=2.2.2
+    - pyyaml >=6.0.2
+    - requests >=2.31.0
+    - requests-html >=0.10.0
+    - rich >=14.0.0
+    - scanpy >=1.11.1
+    - scrublet >=0.2.3
+    - toml >=0.10.2
+    - tqdm >=4.67.1
+    - uvicorn >=0.24.0
+    - varname >=0.14.0
+
+test:
+  imports:
+    - celline
+  commands:
+    - pip check
+    - celline --help
+  requires:
+    - pip
+
+about:
+  summary: Celline - A comprehensive toolkit for single-cell RNA sequencing data analysis
+  license: MIT
+  license_file: LICENSE
+
+extra:
+  recipe-maintainers:
+    - YUYA556223
