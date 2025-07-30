@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import List, Optional
 
-from celline.cli.commands import cmd_list, cmd_help, cmd_run, cmd_info, cmd_init, cmd_interactive, cmd_api, cmd_config
+from celline.cli.commands import cmd_list, cmd_help, cmd_run, cmd_info, cmd_init, cmd_interactive, cmd_api, cmd_config, cmd_export
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -52,6 +52,13 @@ def create_parser() -> argparse.ArgumentParser:
     # API command (for testing)
     api_parser = subparsers.add_parser('api', help='Start API server only (for testing)')
     
+    # Export command
+    export_parser = subparsers.add_parser('export', help='Export data and reports')
+    export_subparsers = export_parser.add_subparsers(dest='export_command', help='Export options')
+    metareport_parser = export_subparsers.add_parser('metareport', help='Generate metadata report from samples.toml')
+    metareport_parser.add_argument('--output', '-o', default='metadata_report.html', help='Output HTML file (default: metadata_report.html)')
+    metareport_parser.add_argument('--project-dir', '-p', default='.', help='Project directory (default: current directory)')
+    
     return parser
 
 
@@ -90,6 +97,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             cmd_interactive(args)
         elif args.command == 'api':
             cmd_api(args)
+        elif args.command == 'export':
+            cmd_export(args)
         else:
             parser.print_help()
             return 1

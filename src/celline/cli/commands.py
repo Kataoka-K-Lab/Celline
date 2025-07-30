@@ -378,3 +378,50 @@ def cmd_config(args: argparse.Namespace) -> None:
             
         except KeyboardInterrupt:
             console.print("\n[yellow]Configuration cancelled by user.[/yellow]")
+
+
+def cmd_export(args: argparse.Namespace) -> None:
+    """Handle export commands."""
+    if not hasattr(args, 'export_command') or args.export_command is None:
+        console.print("[red]Error: Export subcommand is required.[/red]")
+        console.print("Usage: celline export <subcommand>")
+        console.print("Available subcommands: metareport")
+        return
+    
+    if args.export_command == 'metareport':
+        cmd_export_metareport(args)
+    else:
+        console.print(f"[red]Unknown export command: {args.export_command}[/red]")
+
+
+def cmd_export_metareport(args: argparse.Namespace) -> None:
+    """Generate metadata report from samples.toml."""
+    from celline.functions.export_metareport import ExportMetaReport
+    from celline import Project
+    import os
+    
+    try:
+        # Create a Project instance
+        project_dir = getattr(args, 'project_dir', '.')
+        project = Project(project_dir)
+        
+        # Set output file
+        output_file = getattr(args, 'output', 'metadata_report.html')
+        
+        console.print(f"[dim]Generating metadata report...[/dim]")
+        console.print(f"[dim]Project directory: {project_dir}[/dim]")
+        console.print(f"[dim]Output file: {output_file}[/dim]")
+        
+        # Create and run the export function
+        export_func = ExportMetaReport(output_file=output_file)
+        export_func.call(project)
+        
+        console.print(f"[green]✅ Metadata report generated: {output_file}[/green]")
+        
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Export cancelled by user[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Error generating report: {e}[/red]")
+        import traceback
+        if console.is_terminal:
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
