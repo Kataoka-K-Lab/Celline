@@ -1,6 +1,6 @@
 [project]
 name = "celline"
-version = "0.1.17"
+version = "0.1.18"
 description = "Celline - A comprehensive toolkit for single-cell RNA sequencing data analysis"
 readme = "README.md"
 license = { text = "MIT" }
@@ -12,6 +12,7 @@ dependencies = [
     "argparse>=1.4.0",
     "continuousvi>=0.1.5",
     "fastapi>=0.104.0",
+    "harmonypy>=0.0.10",
     "inquirer>=3.4.0",
     "iprogress>=0.4",
     "ipywidgets>=8.1.5",

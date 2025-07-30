@@ -589,6 +589,107 @@ class ExportMetaReport(CellineFunction):
             margin: 0 0 10px 0;
             color: #856404;
         }}
+        /* Project and Sample Nested Structure Styles */
+        .project-section {{
+            border: 2px solid #3498db;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            overflow: hidden;
+            background-color: #ffffff;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }}
+        .project-header {{
+            background: linear-gradient(135deg, #3498db, #2980b9);
+            color: white;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .project-header h2 {{
+            margin: 0;
+            font-size: 1.5em;
+        }}
+        .sample-count {{
+            background-color: rgba(255,255,255,0.2);
+            padding: 5px 12px;
+            border-radius: 15px;
+            font-size: 0.9em;
+        }}
+        .project-links-section {{
+            background-color: #e8f4fd;
+            padding: 15px 20px;
+            border-bottom: 1px solid #d1ecf1;
+        }}
+        .project-links-section h4 {{
+            margin: 0 0 10px 0;
+            color: #0c5460;
+        }}
+        .samples-container {{
+            padding: 20px;
+        }}
+        .samples-container h3 {{
+            margin: 0 0 20px 0;
+            color: #2c3e50;
+            border-bottom: 2px solid #ecf0f1;
+            padding-bottom: 10px;
+        }}
+        .sample-subsection {{
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            background-color: #fafafa;
+            overflow: hidden;
+        }}
+        .sample-header {{
+            background: linear-gradient(135deg, #17a2b8, #138496);
+            color: white;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .sample-header h4 {{
+            margin: 0;
+            font-size: 1.2em;
+        }}
+        .sample-basic-info {{
+            padding: 15px 20px;
+            background-color: #ffffff;
+            border-bottom: 1px solid #e9ecef;
+        }}
+        .sample-links-section {{
+            background-color: #fff3cd;
+            padding: 15px 20px;
+            border-bottom: 1px solid #ffeaa7;
+        }}
+        .sample-links-section h5 {{
+            margin: 0 0 10px 0;
+            color: #856404;
+        }}
+        .sample-summary {{
+            padding: 15px 20px;
+            background-color: #ffffff;
+        }}
+        .sample-summary h5 {{
+            margin: 0 0 10px 0;
+            color: #2c3e50;
+        }}
+        .sample-link {{
+            margin-left: 15px;
+            padding: 3px 0;
+        }}
+        .error-samples-section {{
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }}
+        .error-samples-section h2 {{
+            color: #721c24;
+            margin-top: 0;
+        }}
     </style>
 </head>
 <body>
@@ -641,13 +742,27 @@ class ExportMetaReport(CellineFunction):
         celline_icon_data = self._get_embedded_icon()
         celline_icon_html = f'<img src="{celline_icon_data}" alt="Celline Logo" class="header-icon">' if celline_icon_data else ''
         
-        # Generate samples HTML
+        # Group samples by project and generate nested HTML
+        projects = self._group_samples_by_project(sample_metadata)
         samples_html = ""
+        
+        # Generate error samples first (not grouped by project)
+        error_samples_html = ""
         for sample in sample_metadata:
             if sample['error']:
-                samples_html += self._generate_error_sample_html(sample)
-            else:
-                samples_html += self._generate_successful_sample_html(sample)
+                error_samples_html += self._generate_error_sample_html(sample)
+        
+        if error_samples_html:
+            samples_html += f"""
+            <div class="error-samples-section">
+                <h2>⚠️ Failed Samples</h2>
+                {error_samples_html}
+            </div>
+            """
+        
+        # Generate project sections for successful samples
+        for project_id, project_samples in projects.items():
+            samples_html += self._generate_project_section_html(project_id, project_samples)
         
         # Fill template
         html_content = html_template.format(
@@ -714,7 +829,7 @@ class ExportMetaReport(CellineFunction):
                         {self._generate_technical_details_html(metadata)}
                         <div class="metadata-item">
                             <span class="metadata-label">Child Runs:</span>
-                            <span class="metadata-value">{metadata.children if metadata.children else 'Not available'}</span>
+                            <span class="metadata-value">{self._get_child_runs_display(sample['id'])}</span>
                         </div>
                     </div>
                     
@@ -866,6 +981,50 @@ class ExportMetaReport(CellineFunction):
         </div>
         """
     
+    def _get_project_supplemental_data(self, project_id: str) -> Optional[List[str]]:
+        """Get real supplemental data from GSE project."""
+        try:
+            import requests
+            import xml.etree.ElementTree as ET
+            
+            if not project_id.startswith('GSE'):
+                return None
+            
+            # Query GEO API for GSE project supplemental data
+            url = f"https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc={project_id}&targ=gse&form=xml&view=full"
+            response = requests.get(url, timeout=15)
+            
+            if response.status_code == 200:
+                root = ET.fromstring(response.content)
+                
+                # Define namespace for GEO XML
+                ns = {'geo': 'http://www.ncbi.nlm.nih.gov/geo/info/MINiML'}
+                
+                # Extract supplementary data from GSE
+                supp_files = []
+                
+                # Look for supplementary data in Series element
+                series_elem = root.find('.//geo:Series', ns)
+                if series_elem is not None:
+                    for supp_elem in series_elem.findall('.//geo:Supplementary-Data', ns):
+                        if supp_elem.text:
+                            file_url = supp_elem.text.strip()
+                            supp_files.append(file_url)
+                
+                # Also check for platform-level supplementary data
+                for platform_elem in root.findall('.//geo:Platform', ns):
+                    for supp_elem in platform_elem.findall('.//geo:Supplementary-Data', ns):
+                        if supp_elem.text:
+                            file_url = supp_elem.text.strip()
+                            if file_url not in supp_files:
+                                supp_files.append(file_url)
+                
+                return supp_files if supp_files else None
+                
+        except Exception as e:
+            console.print(f"[dim yellow]Could not retrieve project supplemental data for {project_id}: {e}[/dim yellow]")
+            return None
+    
     def _get_experimental_summary(self, metadata) -> str:
         """Get the best available experimental summary from enriched metadata."""
         # Priority order for summary sources
@@ -889,6 +1048,195 @@ class ExportMetaReport(CellineFunction):
         
         # If no good summary found, return a more informative message
         return "No detailed experimental summary available from the data source."
+    
+    def _group_samples_by_project(self, sample_metadata: List[Dict]) -> Dict[str, List[Dict]]:
+        """Group samples by project ID for nested display."""
+        projects = {}
+        
+        for sample in sample_metadata:
+            if sample['error'] is None and sample['metadata']:
+                project_id = getattr(sample['metadata'], 'parent', 'Unknown Project')
+                if project_id not in projects:
+                    projects[project_id] = []
+                projects[project_id].append(sample)
+            
+        return projects
+    
+    def _generate_project_section_html(self, project_id: str, samples: List[Dict]) -> str:
+        """Generate HTML for a project section with nested samples."""
+        sample_sections = ""
+        
+        # Generate sample sections first
+        for sample in samples:
+            sample_sections += self._generate_sample_subsection_html(sample)
+        
+        # Get real project-level supplemental data from GSE
+        project_supp_data = self._get_project_supplemental_data(project_id)
+        
+        # Generate project-level raw data links from actual GSE supplemental data
+        project_links_html = ""
+        if project_supp_data:
+            for link in sorted(project_supp_data):
+                if link.startswith('ftp://') or link.startswith('http'):
+                    filename = link.split('/')[-1] if '/' in link else link
+                    project_links_html += f'<div class="metadata-item"><a href="{link}" target="_blank" class="db-link">{filename}</a></div>'
+                else:
+                    project_links_html += f'<div class="metadata-item"><span class="metadata-value">{link}</span></div>'
+        
+        project_links_section = f"""
+        <div class="project-links-section">
+            <h4>💾 Raw Data Links for Project</h4>
+            {project_links_html if project_links_html else '<div class="metadata-item"><span class="metadata-value">No project-level links available</span></div>'}
+        </div>
+        """ if project_links_html else ""
+        
+        return f"""
+        <div class="project-section">
+            <div class="project-header">
+                <h2>🗂️ Project: {project_id}</h2>
+                <div class="project-info">
+                    <span class="sample-count">{len(samples)} sample{'s' if len(samples) != 1 else ''}</span>
+                </div>
+            </div>
+            
+            {project_links_section}
+            
+            <div class="samples-container">
+                <h3>📋 Samples in this Project</h3>
+                {sample_sections}
+            </div>
+        </div>
+        """
+    
+    def _generate_sample_subsection_html(self, sample: Dict) -> str:
+        """Generate HTML for a sample subsection within a project."""
+        metadata = sample['metadata']
+        data_source = sample['data_source']
+        
+        # Generate sample-specific raw data links
+        sample_links_html = ""
+        links = []
+        
+        if hasattr(metadata, 'supplementary_files') and metadata.supplementary_files:
+            links = metadata.supplementary_files if isinstance(metadata.supplementary_files, list) else [metadata.supplementary_files]
+        elif hasattr(metadata, 'raw_link') and metadata.raw_link:
+            links = [link.strip() for link in str(metadata.raw_link).split(',') if link.strip()]
+        
+        for link in links:
+            if link.startswith('ftp://') or link.startswith('http'):
+                filename = link.split('/')[-1] if '/' in link else link
+                sample_links_html += f'<div class="metadata-item sample-link"><a href="{link}" target="_blank" class="db-link">{filename}</a></div>'
+        
+        sample_links_section = f"""
+        <div class="sample-links-section">
+            <h5>💾 Raw Data Links for Sample</h5>
+            {sample_links_html if sample_links_html else '<div class="metadata-item"><span class="metadata-value">No sample-specific links available</span></div>'}
+        </div>
+        """ if sample_links_html else ""
+        
+        # Generate appropriate links based on data source
+        sample_link = self._generate_sample_link(metadata.key, data_source)
+        
+        return f"""
+        <div class="sample-subsection">
+            <div class="sample-header">
+                <h4>🧪 {sample['id']}: {sample['description']}</h4>
+                <span class="badge data-source-badge">{data_source}</span>
+            </div>
+            
+            <div class="sample-basic-info">
+                <div class="metadata-item">
+                    <span class="metadata-label">Sample ID:</span>
+                    <span class="metadata-value">{sample_link}</span>
+                </div>
+                <div class="metadata-item">
+                    <span class="metadata-label">Title:</span>
+                    <span class="metadata-value">{metadata.title if metadata.title else 'Not specified'}</span>
+                </div>
+                <div class="metadata-item">
+                    <span class="metadata-label">Species:</span>
+                    <span class="metadata-value">{metadata.species if metadata.species else 'Not specified'}</span>
+                </div>
+            </div>
+            
+            {sample_links_section}
+            
+            <div class="technical-details">
+                <h5>🔬 Technical Details</h5>
+                <div class="metadata-item">
+                    <span class="metadata-label">Child Runs:</span>
+                    <span class="metadata-value">{self._get_child_runs_display(sample['id'])}</span>
+                </div>
+                {self._generate_strategy_info_html(metadata)}
+            </div>
+            
+            <div class="sample-summary">
+                <h5>📝 Experimental Summary</h5>
+                <div class="metadata-value">{self._get_experimental_summary(metadata)}</div>
+            </div>
+        </div>
+        """
+    
+    def _get_child_runs_display(self, sample_id: str) -> str:
+        """Get child runs (SRR IDs) for display."""
+        try:
+            import requests
+            import xml.etree.ElementTree as ET
+            import re
+            
+            if not sample_id.startswith('GSM'):
+                return 'Not available'
+            
+            # First get SRX ID from GEO
+            url = f"https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc={sample_id}&targ=gsm&form=xml&view=full"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code != 200:
+                return 'Not available'
+            
+            root = ET.fromstring(response.content)
+            ns = {'geo': 'http://www.ncbi.nlm.nih.gov/geo/info/MINiML'}
+            
+            srx_id = None
+            
+            # Look for SRA relations to get SRX
+            for relation_elem in root.findall('.//geo:Sample/geo:Relation', ns):
+                relation_type = relation_elem.get('type')
+                target = relation_elem.get('target')
+                if relation_type == 'SRA' and target:
+                    # Extract SRX ID from URL
+                    srx_match = re.search(r'SRX\d+', target)
+                    if srx_match:
+                        srx_id = srx_match.group()
+                        break
+            
+            if not srx_id:
+                return 'Not available'
+            
+            # Now get SRR IDs from SRX using SRA API
+            sra_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=sra&id={srx_id}&rettype=xml"
+            sra_response = requests.get(sra_url, timeout=10)
+            
+            if sra_response.status_code == 200:
+                sra_root = ET.fromstring(sra_response.content)
+                srr_ids = []
+                
+                # Extract SRR IDs from SRA XML
+                for run_elem in sra_root.iter('RUN'):
+                    run_accession = run_elem.get('accession')
+                    if run_accession and run_accession.startswith('SRR'):
+                        srr_ids.append(run_accession)
+                
+                if srr_ids:
+                    return ', '.join(srr_ids)
+                else:
+                    return f'{srx_id} (no SRR found)'
+            else:
+                return f'{srx_id} (SRA query failed)'
+                
+        except Exception as e:
+            console.print(f"[dim yellow]Could not retrieve child runs for {sample_id}: {e}[/dim yellow]")
+            return 'Not available'
     
     def _get_embedded_icon(self) -> str:
         """Get base64 encoded Celline icon for HTML embedding."""
