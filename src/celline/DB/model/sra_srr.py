@@ -1,12 +1,14 @@
-from typing import Type, NamedTuple, Final, Optional, List, Dict
-from enum import Enum
-from celline.DB.dev.model import BaseModel, Primary, RunSchema
-from xml.etree import ElementTree as ET
-from xml.etree.ElementTree import ElementTree, Element
-import requests
-import polars as pl
 from dataclasses import dataclass
+from enum import Enum
+from typing import Dict, Final, List, NamedTuple, Optional, Type
+from xml.etree import ElementTree as ET
+from xml.etree.ElementTree import Element, ElementTree
+
+import polars as pl
+import requests
 from rich import print
+
+from celline.DB.dev.model import BaseModel, Primary, RunSchema
 
 
 @dataclass
@@ -15,9 +17,7 @@ class SRA_SRR_Schema(RunSchema):
 
 
 class SRA_SRR(BaseModel[SRA_SRR_Schema]):
-    BASE_XML_PATH: Final[
-        str
-    ] = "https://trace.ncbi.nlm.nih.gov/Traces/sra-db-be/run_new?acc="
+    BASE_XML_PATH: Final[str] = "https://trace.ncbi.nlm.nih.gov/Traces/sra-db-be/run_new?acc="
 
     def set_class_name(self) -> str:
         """Set class name"""
@@ -27,15 +27,13 @@ class SRA_SRR(BaseModel[SRA_SRR_Schema]):
         return SRA_SRR_Schema
 
     @staticmethod
-    def decide_strategy(file_infos: List[Dict[str, str]]) -> str:
+    def decide_strategy(file_infos: list[dict[str, str]]) -> str:
         """Determine analysis strategy"""
-        suggested_strategy: Optional[str] = None
+        suggested_strategy: str | None = None
         for file_info in file_infos:
-            if ".bam" in file_info.get("filename", ""):
+            if "bam" in file_info.get("semantic_name", ""):
                 return "bam"
-            if (".fastq" in file_info.get("filename", "")) or (
-                ".fq" in file_info.get("filename", "")
-            ):
+            if ("fastq" in file_info.get("semantic_name", "")) or ("fq" in file_info.get("semantic_name", "")):
                 suggested_strategy = "fastq"
         if suggested_strategy is None:
             raise ValueError("Could not resolve the strategy from given file_infos.")
@@ -52,15 +50,11 @@ class SRA_SRR(BaseModel[SRA_SRR_Schema]):
         if member is None:
             tid: str = str(acceptable_id)
             print(f"[red]ERROR[/red]Could not find member. Is SRR ID correct?: {tid}")
-            raise KeyError()
+            raise KeyError
         files_elem = tree.find("RUN/SRAFiles")
         if files_elem is None:
             raise KeyError("Could not find files. Is SRR ID correct?")
-        files = [
-            file
-            for file in [d.attrib for d in list(files_elem)]
-            if file.get("supertype") == "Original"
-        ]
+        files = [file for file in [d.attrib for d in list(files_elem)] if file.get("supertype") == "Original"]
         if not files:
             raise KeyError("Could not find original files.")
         strategy = self.decide_strategy(files)
@@ -72,7 +66,7 @@ class SRA_SRR(BaseModel[SRA_SRR_Schema]):
                 children=None,
                 raw_link=",".join([file["url"] for file in files if "url" in file]),
                 title=None,
-            )
+            ),
         )
 
         return newdata
