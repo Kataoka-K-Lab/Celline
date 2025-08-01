@@ -1,6 +1,6 @@
 [project]
 name = "celline"
-version = "0.1.18"
+version = "0.1.19"
 description = "Celline - A comprehensive toolkit for single-cell RNA sequencing data analysis"
 readme = "README.md"
 license = { text = "MIT" }
