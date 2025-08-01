@@ -1,0 +1,8 @@
+gene	type	marker_type
+SOX2	progenitor	root
+NES	progenitor	root
+HES1	progenitor	root
+PAX6	progenitor	root
+ASCL1	progenitor	root
+MAP2	differentiation	root
+DCX	differentiation	root
