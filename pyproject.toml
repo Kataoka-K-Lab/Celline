@@ -1,6 +1,6 @@
 [project]
 name = "celline"
-version = "0.1.21"
+version = "0.1.22"
 description = "Celline - A comprehensive toolkit for single-cell RNA sequencing data analysis"
 readme = "README.md"
 license = { text = "MIT" }
@@ -17,6 +17,7 @@ dependencies = [
     "iprogress>=0.4",
     "ipywidgets>=8.1.5",
     "multipledispatch>=1.0.0",
+    "openai>=1.98.0",
     "pandas>=2.2.3",
     "polars>=1.26.0",
     "pyarrow>=19.0.1",
@@ -28,6 +29,7 @@ dependencies = [
     "requests-html>=0.10.0",
     "rich>=14.0.0",
     "scanpy>=1.11.1",
+    "scikit-misc>=0.5.1",
     "scrublet>=0.2.3",
     "toml>=0.10.2",
     "tqdm>=4.67.1",

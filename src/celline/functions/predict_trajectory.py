@@ -12,6 +12,7 @@ import scvi
 import toml
 from rich.console import Console
 
+from celline.config import Setting
 from celline.functions._base import CellineFunction
 from celline.sample import SampleResolver
 
@@ -40,6 +41,8 @@ class PredictTrajectory(CellineFunction):
         force_rerun: bool = False,
         verbose: bool = True,
         output_dir: str | None = None,
+        markers_file: str | None = None,
+        no_rds: bool = False,
     ) -> None:
         """Initialize the PredictTrajectory class.
 
@@ -65,6 +68,11 @@ class PredictTrajectory(CellineFunction):
             Whether to show detailed progress.
         output_dir : Optional[str], default=None
             Custom output directory. If None, uses default structure.
+        markers_file : Optional[str], default=None
+            Path to canonical markers TSV file for trajectory analysis.
+            Required when using CLI. If None, uses package default markers.
+        no_rds : bool, default=False
+            Skip saving RDS files (sce.rds, seurat.rds) for faster processing.
 
         """
         self.integrate_mode = integrate_mode
@@ -76,19 +84,60 @@ class PredictTrajectory(CellineFunction):
         self.latent_dims = latent_dims
         self.force_rerun = force_rerun
         self.verbose = verbose
+        self.no_rds = no_rds
 
         # Setup output directory (will be created in call method when project is available)
         self.custom_output_dir = output_dir
         self.output_dir = None  # Will be set in call method
+        self.markers_file = markers_file  # Will be validated in call method
 
         # R script and marker file paths will be set in call() method when project is available
         self.r_script_integrated = None
         self.r_script_single = None
-        self.markers_file = None
+        # Note: self.markers_file is already set above, don't overwrite it
         self.root_markers_file = None
         self.cell_cycle_markers_file = None
 
         # File validation will be done in call() method
+
+    def _get_rscript_path(self) -> str:
+        """Get the correct Rscript path from configuration."""
+        if Setting.r_path:
+            # If r_path is set, construct Rscript path
+            r_path = Path(Setting.r_path)
+            if r_path.name == 'R':
+                # If r_path points to R executable, replace with Rscript
+                rscript_path = str(r_path.parent / 'Rscript')
+            elif r_path.is_dir():
+                # If r_path is a directory, look for Rscript in it
+                rscript_path = str(r_path / 'Rscript')
+            else:
+                # Assume r_path is a directory path without trailing separator
+                rscript_path = str(Path(Setting.r_path) / 'Rscript')
+        else:
+            # Fallback to system Rscript
+            rscript_path = 'Rscript'
+
+        return rscript_path
+
+    def _check_rscript_availability(self) -> None:
+        """Check if Rscript is available and raise an error if not."""
+        rscript_path = self._get_rscript_path()
+
+        try:
+            # Test if Rscript is available
+            result = subprocess.run([rscript_path, "--version"],
+                                  capture_output=True, text=True, check=True)
+            if self.verbose:
+                console.print(f"[green]✓ Rscript found: {rscript_path}[/green]")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            error_msg = f"Rscript not found at: {rscript_path}"
+            if Setting.r_path:
+                error_msg += f"\nPlease check your R installation path in setting.toml: r_path = '{Setting.r_path}'"
+            else:
+                error_msg += "\nPlease set the R path in setting.toml or ensure Rscript is in your PATH"
+            console.print(f"[red]❌ {error_msg}[/red]")
+            raise FileNotFoundError(error_msg) from e
 
     def register(self) -> str:
         return "predict_trajectory"
@@ -109,7 +158,7 @@ class PredictTrajectory(CellineFunction):
 
     def _get_target_samples(self) -> list[str]:
         """Determine which samples to process based on arguments."""
-        available_samples = list(SampleResolver.samples().keys())
+        available_samples = list(SampleResolver.samples.keys())
 
         if self.samples:
             # Flatten and parse sample arguments
@@ -178,10 +227,21 @@ class PredictTrajectory(CellineFunction):
         self.r_script_integrated = celline_root / "template" / "hook" / "R" / "predict_trajectory" / "slingshot.R"
         self.r_script_single = celline_root / "template" / "hook" / "R" / "predict_trajectory" / "slingshot_single.R"
 
-        # Define marker file paths - use celline library paths
-        self.markers_file = celline_root / "data" / "markers" / "__markers.tsv"
-        self.root_markers_file = celline_root / "data" / "markers" / "__root_markers.tsv"
-        self.cell_cycle_markers_file = celline_root / "data" / "markers" / "__cell_cycle_markers.tsv"
+        # Define marker file paths - use user-specified file if provided, otherwise use celline library paths
+        if self.markers_file:
+            # User-specified canonical markers file - convert to absolute path
+            user_markers_file = Path(self.markers_file).resolve()
+            console.print(f"[green]Using user-specified markers file: {user_markers_file}[/green]")
+            self.markers_file = user_markers_file
+            # Use default celline library paths for other marker files
+            self.root_markers_file = celline_root / "data" / "markers" / "__root_markers.tsv"
+            self.cell_cycle_markers_file = celline_root / "data" / "markers" / "__cell_cycle_markers.tsv"
+        else:
+            # Default celline library paths for all markers
+            console.print("[yellow]Using default celline markers files[/yellow]")
+            self.markers_file = celline_root / "data" / "markers" / "__markers.tsv"
+            self.root_markers_file = celline_root / "data" / "markers" / "__root_markers.tsv"
+            self.cell_cycle_markers_file = celline_root / "data" / "markers" / "__cell_cycle_markers.tsv"
 
         # Validate required files exist
         self._validate_required_files()
@@ -470,7 +530,8 @@ class PredictTrajectory(CellineFunction):
             for candidate_file in sorted(integrated_files, key=lambda x: x.stat().st_mtime, reverse=True):
                 try:
                     # Test if file is readable with rhdf5
-                    test_cmd = ["Rscript", "-e", f"library(rhdf5); h5ls('{candidate_file}')"]
+                    rscript_path = self._get_rscript_path()
+                    test_cmd = [rscript_path, "-e", f"library(rhdf5); h5ls('{candidate_file}')"]
                     result = subprocess.run(test_cmd, capture_output=True, text=True, check=True)
                     integrated_file = candidate_file
                     if self.verbose:
@@ -592,9 +653,13 @@ class PredictTrajectory(CellineFunction):
         if self.force_rerun:
             r_args.extend(["--force_rerun", "TRUE"])
 
+        if self.no_rds:
+            r_args.extend(["--no_rds", "TRUE"])
+
         # Execute R script with real-time output
         try:
-            cmd = ["Rscript", str(self.r_script_integrated)] + r_args
+            rscript_path = self._get_rscript_path()
+            cmd = [rscript_path, str(self.r_script_integrated)] + r_args
 
             # Set environment variables for R script
             env = os.environ.copy()
@@ -764,9 +829,13 @@ class PredictTrajectory(CellineFunction):
             if self.force_rerun:
                 r_args.extend(["--force_rerun", "TRUE"])
 
+            if self.no_rds:
+                r_args.extend(["--no_rds", "TRUE"])
+
             # Execute R script with real-time output
             try:
-                cmd = ["Rscript", str(self.r_script_single)] + r_args
+                rscript_path = self._get_rscript_path()
+                cmd = [rscript_path, str(self.r_script_single)] + r_args
 
                 # Set environment variables for R script
                 env = os.environ.copy()
@@ -804,23 +873,31 @@ class PredictTrajectory(CellineFunction):
             # Setup paths using project information
             self._setup_paths(project)
 
-            # Setup output directory using project root
+            # Check Rscript availability before proceeding
+            self._check_rscript_availability()
+
+            # Step 1: Determine target samples first (needed for directory naming)
+            target_samples = self._get_target_samples()
+
+            # Setup output directory using project root and sample names for better caching
             # Handle case where custom_output_dir attribute might not exist (CLI compatibility)
             custom_output_dir = getattr(self, "custom_output_dir", None)
             if custom_output_dir is None:
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                # Create directory name based on sample IDs for better caching
+                sample_dir_name = "_".join(sorted(target_samples))  # Use underscore separator
+                # Limit directory name length to avoid filesystem issues
+                if len(sample_dir_name) > 100:
+                    sample_dir_name = f"{len(target_samples)}samples_{hash(sample_dir_name) % 10000:04d}"
+
                 if self.integrate_mode:
-                    self.output_dir = Path(project.PROJ_PATH) / "trajectory" / "integrated" / timestamp
+                    self.output_dir = Path(project.PROJ_PATH) / "trajectory" / "integrated" / sample_dir_name
                 else:
-                    self.output_dir = Path(project.PROJ_PATH) / "trajectory" / "single" / timestamp
+                    self.output_dir = Path(project.PROJ_PATH) / "trajectory" / "single" / sample_dir_name
             else:
                 self.output_dir = Path(custom_output_dir)
 
             # Ensure output directory exists
             self.output_dir.mkdir(parents=True, exist_ok=True)
-
-            # Step 1: Determine target samples
-            target_samples = self._get_target_samples()
 
             # Step 2: Validate integration mode if requested
             if self.integrate_mode:
@@ -870,6 +947,8 @@ class PredictTrajectory(CellineFunction):
         latent_dims = getattr(args, "latent_dims", None) or getattr(args, "latent-dims", None)
         force_rerun = getattr(args, "force_rerun", False) or getattr(args, "force-rerun", False)
         output_dir = getattr(args, "output_dir", None) or getattr(args, "output-dir", None)
+        markers_file = getattr(args, "markers", None)
+        no_rds = getattr(args, "no_rds", False) or getattr(args, "no-rds", False)
 
         return cls(
             integrate_mode=getattr(args, "integrate", False),
@@ -882,10 +961,13 @@ class PredictTrajectory(CellineFunction):
             force_rerun=force_rerun,
             output_dir=output_dir,
             verbose=getattr(args, "verbose", True),
+            markers_file=markers_file,
+            no_rds=no_rds,
         )
 
     def add_cli_args(self, parser: argparse.ArgumentParser) -> None:
         """Add command-line arguments for trajectory analysis."""
+        parser.add_argument("--markers", type=str, required=True, help="Path to canonical markers TSV file (gene lists for trajectory analysis)")
         parser.add_argument("--integrate", action="store_true", help="Use integration mode (scVI latent space) instead of single mode (PCA)")
         parser.add_argument("--samples", nargs="*", help="List of specific sample IDs to analyze (e.g., --samples sample1 sample2 or --samples sample1,sample2)")
         parser.add_argument("--projects", nargs="*", help="List of specific project IDs to analyze (e.g., --projects GSE123456 GSE789012 or --projects GSE123456,GSE789012)")
@@ -894,6 +976,7 @@ class PredictTrajectory(CellineFunction):
         parser.add_argument("--n-features", type=int, default=2000, help="Number of variable features for single mode (default: 2000)")
         parser.add_argument("--latent-dims", type=str, default="1:10", help="Latent dimensions for integration mode (R-style range, default: '1:10')")
         parser.add_argument("--force-rerun", action="store_true", help="Force rerun even if cached results exist")
+        parser.add_argument("--no-rds", action="store_true", help="Skip saving RDS files (sce.rds, seurat.rds) for faster processing")
         parser.add_argument("--output-dir", type=str, help="Custom output directory (default: auto-generated)")
         parser.add_argument("--verbose", action="store_true", default=True, help="Show detailed progress (default: True)")
 

@@ -39,6 +39,224 @@ load_libraries <- function() {
   source(readh5ad_path)
 }
 
+# ────────────────────────── Gene name conversion ──────────────────────────
+convert_gene_names <- function(gene_names, available_genes) {
+  # Convert gene names between different formats (Human/Mouse) and find matches.
+  # Tries multiple formats: original, Mouse (Title case), lowercase, uppercase.
+
+  if (length(gene_names) == 0) return(character(0))
+
+  # Try original format first
+  found_genes <- intersect(gene_names, available_genes)
+  if (length(found_genes) > 0) {
+    message("[DEBUG] Found ", length(found_genes), "/", length(gene_names),
+            " genes in original format")
+    return(found_genes)
+  }
+
+  # Try Mouse format: First letter uppercase, rest lowercase (e.g., MCM5 -> Mcm5)
+  # Using base R functions instead of stringr
+  mouse_format <- paste0(toupper(substr(tolower(gene_names), 1, 1)),
+                        substr(tolower(gene_names), 2, nchar(gene_names)))
+  found_genes <- intersect(mouse_format, available_genes)
+  if (length(found_genes) > 0) {
+    message("[DEBUG] Found ", length(found_genes), "/", length(gene_names),
+            " genes in Mouse format (Title case)")
+    return(found_genes)
+  }
+
+  # Try all lowercase
+  lower_format <- tolower(gene_names)
+  found_genes <- intersect(lower_format, available_genes)
+  if (length(found_genes) > 0) {
+    message("[DEBUG] Found ", length(found_genes), "/", length(gene_names),
+            " genes in lowercase format")
+    return(found_genes)
+  }
+
+  # Try all uppercase
+  upper_format <- toupper(gene_names)
+  found_genes <- intersect(upper_format, available_genes)
+  if (length(found_genes) > 0) {
+    message("[DEBUG] Found ", length(found_genes), "/", length(gene_names),
+            " genes in uppercase format")
+    return(found_genes)
+  }
+
+  message("[WARNING] No genes found in any format for: ",
+          paste(head(gene_names, 5), collapse = ", "))
+  return(character(0))
+}
+
+# ─────────────────── Cell exclusion filtering ─────────────────────────────
+# Function to map user-friendly key names to actual metadata column names
+map_exclude_key <- function(user_key, available_keys) {
+  # Define mapping from user-friendly names to possible actual column names
+  key_mappings <- list(
+    "celltype" = c("scpred_prediction", "cell_type_cluster_weighted", "cell_type_cluster",
+                   "cell_type", "celltype", "predicted.celltype", "predicted_celltype",
+                   "annotation", "cluster_annotation"),
+    "cluster" = c("seurat_clusters", "leiden_scvi", "cluster"),
+    "sample" = c("sample_id", "sample", "orig.ident"),
+    "filter" = c("filter", "qc_filter"),
+    "phase" = c("Phase", "cell_cycle_phase", "phase")
+  )
+
+  # First, check if the user key exists directly
+  if (user_key %in% available_keys) {
+    message("[DEBUG] Direct match found for key '", user_key, "'")
+    return(user_key)
+  }
+
+  # Check if it's a mapped key
+  if (user_key %in% names(key_mappings)) {
+    possible_keys <- key_mappings[[user_key]]
+    for (possible_key in possible_keys) {
+      if (possible_key %in% available_keys) {
+        message("[DEBUG] Mapped '", user_key, "' to actual key '", possible_key, "'")
+        return(possible_key)
+      }
+    }
+  }
+
+  # Try case-insensitive partial matching
+  for (available_key in available_keys) {
+    if (grepl(user_key, available_key, ignore.case = TRUE) ||
+        grepl(available_key, user_key, ignore.case = TRUE)) {
+      message("[DEBUG] Partial match: mapped '", user_key, "' to '", available_key, "'")
+      return(available_key)
+    }
+  }
+
+  # No match found
+  message("[WARNING] No match found for key '", user_key, "'")
+
+  # Suggest similar keys
+  celltype_related <- available_keys[grepl("cell|type|pred|annotation", available_keys, ignore.case = TRUE)]
+  cluster_related <- available_keys[grepl("cluster|leiden", available_keys, ignore.case = TRUE)]
+
+  if (grepl("cell|type", user_key, ignore.case = TRUE) && length(celltype_related) > 0) {
+    message("[SUGGESTION] For celltype, try one of: ", paste(head(celltype_related, 5), collapse = ", "))
+  } else if (grepl("cluster", user_key, ignore.case = TRUE) && length(cluster_related) > 0) {
+    message("[SUGGESTION] For cluster, try one of: ", paste(head(cluster_related, 5), collapse = ", "))
+  }
+
+  return(NULL)
+}
+
+apply_exclude_filters <- function(seurat_obj, exclude_json = NULL) {
+  # Apply cell exclusion filters based on metadata
+  # exclude_json: JSON string of format {"key": ["value1", "value2"], ...}
+
+  if (is.null(exclude_json) || exclude_json == "" || exclude_json == "null") {
+    message("[INFO] No exclude filters specified, keeping all cells")
+    return(seurat_obj)
+  }
+
+  tryCatch({
+    # Parse JSON exclude filters
+    exclude_filters <- jsonlite::fromJSON(exclude_json)
+
+    if (length(exclude_filters) == 0) {
+      message("[INFO] Empty exclude filters, keeping all cells")
+      return(seurat_obj)
+    }
+
+    message("[INFO] Applying exclude filters: ", exclude_json)
+
+    # Debug: Show available metadata keys
+    available_keys <- colnames(seurat_obj@meta.data)
+    message("[DEBUG] Available metadata keys in Seurat object (", length(available_keys), " total):")
+    message("[DEBUG] ", paste(head(available_keys, 15), collapse = ", "),
+            if(length(available_keys) > 15) "..." else "")
+
+    initial_cells <- ncol(seurat_obj)
+    cells_to_keep <- rep(TRUE, initial_cells)
+
+    # Apply each exclude filter
+    for (user_key in names(exclude_filters)) {
+      exclude_values <- exclude_filters[[user_key]]
+
+      if (length(exclude_values) == 0) {
+        message("[DEBUG] No values to exclude for key '", user_key, "', skipping")
+        next
+      }
+
+      message("[DEBUG] Processing exclude filter for user key: '", user_key, "'")
+
+      # Map user key to actual metadata key
+      actual_key <- map_exclude_key(user_key, available_keys)
+
+      if (is.null(actual_key)) {
+        message("[ERROR] Could not map user key '", user_key, "' to any metadata column")
+        message("[ERROR] Available keys: ", paste(head(available_keys, 10), collapse = ", "),
+                if(length(available_keys) > 10) "..." else "")
+        next
+      }
+
+      message("[INFO] Excluding cells where '", actual_key, "' is in: ", paste(exclude_values, collapse = ", "))
+
+      # Get cell values for the actual metadata key
+      cell_values <- seurat_obj@meta.data[[actual_key]]
+
+      # Debug: Show unique values in this column
+      unique_values <- unique(as.character(cell_values))
+      message("[DEBUG] Unique values in '", actual_key, "' (", length(unique_values), " total): ",
+              paste(head(unique_values, 10), collapse = ", "),
+              if(length(unique_values) > 10) "..." else "")
+
+      # Find cells to exclude (where value matches any in exclude_values)
+      cells_to_exclude <- cell_values %in% exclude_values
+
+      # Update cells_to_keep (exclude cells that match)
+      cells_to_keep <- cells_to_keep & !cells_to_exclude
+
+      excluded_count <- sum(cells_to_exclude)
+      message("[INFO] Excluded ", excluded_count, " cells based on '", actual_key, "' matching: ",
+              paste(exclude_values, collapse = ", "))
+
+      # Show details of what was excluded
+      if (excluded_count > 0) {
+        excluded_value_counts <- table(cell_values[cells_to_exclude])
+        message("[DEBUG] Breakdown of excluded cells: ",
+                paste(names(excluded_value_counts), "=", excluded_value_counts, collapse = ", "))
+      } else {
+        message("[WARNING] No cells were excluded for '", actual_key, "' - check if values '",
+                paste(exclude_values, collapse = ", "), "' exist in the data")
+      }
+    }
+
+    # Apply filtering
+    final_cells <- sum(cells_to_keep)
+    excluded_cells <- initial_cells - final_cells
+
+    if (excluded_cells > 0) {
+      seurat_filtered <- seurat_obj[, cells_to_keep]
+      message("[INFO] Cell exclusion summary:")
+      message("  Initial cells: ", initial_cells)
+      message("  Excluded cells: ", excluded_cells)
+      message("  Remaining cells: ", final_cells)
+      message("  Exclusion rate: ", round(excluded_cells / initial_cells * 100, 1), "%")
+
+      # Check if enough cells remain for analysis
+      if (final_cells < 50) {
+        warning("Very few cells remaining after exclusion filtering (", final_cells, "). Consider adjusting exclude criteria.")
+      }
+
+      return(seurat_filtered)
+    } else {
+      message("[WARNING] No cells were excluded by any of the specified filters")
+      message("[WARNING] This might indicate that the specified values don't exist in the metadata")
+      return(seurat_obj)
+    }
+
+  }, error = function(e) {
+    message("[ERROR] Failed to apply exclude filters: ", e$message)
+    message("[WARNING] Continuing without exclude filtering")
+    return(seurat_obj)
+  })
+}
+
 # ─────────────────── 1. Input & required‑gene validation ───────────────────
 read_inputs <- function(h5ad_path,
                         progenitor_markers,
@@ -47,25 +265,36 @@ read_inputs <- function(h5ad_path,
   # Read AnnData → Seurat
   seurat_obj <- read_h5ad(h5ad_path)
 
-  # Build required gene list (A–D)
+  # Build required gene list (A–D) with format conversion
   data("cc.genes.updated.2019", package = "Seurat")
   cell_cycle_genes <- unlist(cc.genes.updated.2019)
 
   mst_markers <- readr::read_tsv(marker_file,
                                  show_col_types = FALSE)$gene
 
-  required_genes <- union(cell_cycle_genes,
-                    union(progenitor_markers,
-                    union(differentiation_markers,
-                          mst_markers)))
+  # Convert gene names to find matches in the dataset
+  available_seurat_genes <- rownames(seurat_obj)
 
-  missing <- setdiff(required_genes, rownames(seurat_obj))
-  if (length(missing) > 0) {
-    stop("Required genes are missing: ",
-         paste(head(missing, 10), collapse = ", "),
-         if (length(missing) > 10) " …" else "")
+  cc_found <- convert_gene_names(cell_cycle_genes, available_seurat_genes)
+  prog_found <- convert_gene_names(progenitor_markers, available_seurat_genes)
+  diff_found <- convert_gene_names(differentiation_markers, available_seurat_genes)
+  mst_found <- convert_gene_names(mst_markers, available_seurat_genes)
+
+  available_genes <- union(cc_found, union(prog_found, union(diff_found, mst_found)))
+  total_requested <- length(cell_cycle_genes) + length(progenitor_markers) +
+                    length(differentiation_markers) + length(mst_markers)
+
+  message("[INFO] Gene matching summary:")
+  message("  Cell cycle: ", length(cc_found), "/", length(cell_cycle_genes))
+  message("  Progenitor: ", length(prog_found), "/", length(progenitor_markers))
+  message("  Differentiation: ", length(diff_found), "/", length(differentiation_markers))
+  message("  MST markers: ", length(mst_found), "/", length(mst_markers))
+  message("  Total available: ", length(available_genes), "/", total_requested)
+
+  if (length(available_genes) == 0) {
+    warning("No marker genes found in dataset. Check gene name formats.")
   }
-  message("[INFO] All required genes present (n = ", length(required_genes), ").")
+
   seurat_obj
 }
 
@@ -180,8 +409,32 @@ preprocess_seurat_latent <- function(seurat,
 # ───────────────────── 3. Cell‑cycle scoring ───────────────────────────────
 score_cell_cycle <- function(seurat) {
   data("cc.genes.updated.2019", package = "Seurat")
-  s_genes   <- intersect(cc.genes.updated.2019$s.genes,   rownames(seurat))
-  g2m_genes <- intersect(cc.genes.updated.2019$g2m.genes, rownames(seurat))
+
+  # Use gene name conversion to find matches in different formats
+  available_seurat_genes <- rownames(seurat)
+  s_genes   <- convert_gene_names(cc.genes.updated.2019$s.genes, available_seurat_genes)
+  g2m_genes <- convert_gene_names(cc.genes.updated.2019$g2m.genes, available_seurat_genes)
+
+  # Check if we have enough genes for cell cycle scoring
+  min_genes_required <- 5  # Minimum genes needed for meaningful scoring
+
+  if (length(s_genes) < min_genes_required || length(g2m_genes) < min_genes_required) {
+    warning("Insufficient cell cycle genes available (S: ", length(s_genes),
+            ", G2M: ", length(g2m_genes), "). Skipping cell cycle scoring.")
+    message("[WARNING] Cell cycle scoring skipped due to insufficient marker genes.")
+
+    # Add empty cell cycle columns for compatibility
+    seurat@meta.data$S_phase1 <- 0
+    seurat@meta.data$G2M_phase1 <- 0
+    seurat@meta.data$S.Score <- 0
+    seurat@meta.data$G2M.Score <- 0
+    seurat@meta.data$Phase <- "G1"
+
+    return(seurat)
+  }
+
+  message("[INFO] Cell cycle scoring with ", length(s_genes), " S-phase and ",
+          length(g2m_genes), " G2M-phase genes.")
 
   seurat |>
     Seurat::AddModuleScore(list(s_genes),   name = "S_phase") |>
@@ -198,24 +451,39 @@ select_root_cluster <- function(seurat,
 
   message("[INFO] Selecting root cluster based on marker expression...")
 
-  # Validate marker genes
-  prog <- intersect(progenitor_markers,      rownames(seurat))
-  diff <- intersect(differentiation_markers, rownames(seurat))
+  # Validate marker genes using format conversion
+  available_seurat_genes <- rownames(seurat)
+  prog <- convert_gene_names(progenitor_markers, available_seurat_genes)
+  diff <- convert_gene_names(differentiation_markers, available_seurat_genes)
 
   message("[DEBUG] Progenitor markers found: ", length(prog), "/", length(progenitor_markers),
           " (", paste(head(prog, 3), collapse = ", "), if(length(prog) > 3) "..." else "", ")")
   message("[DEBUG] Differentiation markers found: ", length(diff), "/", length(differentiation_markers),
           " (", paste(head(diff, 3), collapse = ", "), if(length(diff) > 3) "..." else "", ")")
 
-  if (length(prog) == 0) {
-    stop("No progenitor markers found in dataset. Available genes: ",
-         paste(head(rownames(seurat), 10), collapse = ", "), "...")
+  # Check if we have enough markers for scoring
+  min_markers_required <- 1  # Minimum markers needed for scoring
+
+  if (length(prog) < min_markers_required) {
+    warning("Insufficient progenitor markers found (", length(prog), "/", length(progenitor_markers), "). Using default scoring.")
+    message("[WARNING] Progenitor scoring skipped, using random cluster selection.")
+    # Return first cluster as root for simplicity
+    cluster_levels <- levels(factor(seurat@meta.data$seurat_clusters))
+    if (length(cluster_levels) > 0) {
+      return(cluster_levels[1])
+    } else {
+      return("0")
+    }
   }
 
-  if (length(diff) == 0) {
-    stop("No differentiation markers found in dataset. Available genes: ",
-         paste(head(rownames(seurat), 10), collapse = ", "), "...")
+  if (length(diff) < min_markers_required) {
+    warning("Insufficient differentiation markers found (", length(diff), "/", length(differentiation_markers), "). Using default scoring.")
+    message("[WARNING] Differentiation scoring will use available progenitor markers only.")
+    # Use prog markers for both if diff is not available
+    diff <- prog
   }
+
+  message("[INFO] Using ", length(prog), " progenitor and ", length(diff), " differentiation markers for scoring.")
 
   seurat |>
     Seurat::AddModuleScore(list(prog), name = "Prog") |>
@@ -408,12 +676,12 @@ export_lineage_celltypes <- function(sce,
 
   # Auto-detect cell type column if not specified
   if (is.null(cell_type_col)) {
-    potential_cols <- c("scpred_prediction", "cell_type_cluster_weighted", "cell_type_cluster", 
+    potential_cols <- c("scpred_prediction", "cell_type_cluster_weighted", "cell_type_cluster",
                        "cell_type", "celltype", "predicted.celltype", "predicted_celltype",
                        "annotation", "leiden_scvi", "seurat_clusters")
-    
+
     available_cols <- colnames(SingleCellExperiment::colData(sce))
-    
+
     for (col in potential_cols) {
       if (col %in% available_cols) {
         cell_type_col <- col
@@ -421,13 +689,13 @@ export_lineage_celltypes <- function(sce,
         break
       }
     }
-    
+
     if (is.null(cell_type_col)) {
-      stop("No suitable cell type column found. Available columns: ", 
+      stop("No suitable cell type column found. Available columns: ",
            paste(available_cols, collapse = ", "))
     }
   }
-  
+
   # Verify the column exists
   if (!cell_type_col %in% colnames(SingleCellExperiment::colData(sce))) {
     stop("Cell type column '", cell_type_col, "' not found in SCE object. Available columns: ",
@@ -483,6 +751,7 @@ make_plots <- function(seurat,
     }
   }
 
+  # Basic UMAP with clusters
   p_umap <- ggplot2::ggplot(meta,
                             ggplot2::aes(U1, U2,
                                          colour = seurat_clusters)) +
@@ -497,6 +766,7 @@ make_plots <- function(seurat,
                              plot.background = ggplot2::element_rect(fill = "white", color = NA)) +
               ggplot2::labs(title = "UMAP (clusters)")
 
+  # Cluster scores heatmap
   p_heat <- score_table |>
     tidyr::pivot_longer(-cluster,
                         names_to  = "metric",
@@ -512,6 +782,12 @@ make_plots <- function(seurat,
       ggplot2::theme(panel.background = ggplot2::element_rect(fill = "white", color = NA),
                      plot.background = ggplot2::element_rect(fill = "white", color = NA)) +
       ggplot2::labs(title = "Cluster scores")
+
+  # Create score-based UMAP plots
+  score_plots <- create_score_umaps(meta, start_cluster)
+
+  # Create score distribution plots
+  distribution_plots <- create_score_distributions(meta)
 
   # Try to create cell type UMAP if cell type annotation is available
   p_celltype <- NULL
@@ -552,13 +828,347 @@ make_plots <- function(seurat,
     }
   }
 
-  # Return plots (include cell type UMAP if created successfully)
+  # Combine all plots
   plots <- list(umap = p_umap, heat = p_heat)
+
+  # Add score-based UMAP plots
+  plots <- c(plots, score_plots)
+
+  # Add distribution plots
+  plots <- c(plots, distribution_plots)
+
+  # Add cell type UMAP if available
   if (!is.null(p_celltype)) {
     plots[["celltype_umap"]] <- p_celltype
   }
 
   return(plots)
+}
+
+# ───────────────────── 7a. Score-based UMAP plots ──────────────────────────
+create_score_umaps <- function(meta, start_cluster) {
+  plots <- list()
+
+  # Define score columns and their display properties
+  score_configs <- list(
+    list(col = "S.Score", title = "S Phase Score", color_scale = "viridis"),
+    list(col = "G2M.Score", title = "G2M Phase Score", color_scale = "viridis"),
+    list(col = "Prog1", title = "Progenitor Score", color_scale = "plasma"),
+    list(col = "Diff1", title = "Differentiation Score", color_scale = "plasma")
+  )
+
+  # Add combined cell cycle score if both S and G2M scores exist
+  if ("S.Score" %in% colnames(meta) && "G2M.Score" %in% colnames(meta)) {
+    meta$cycle_combined <- meta$S.Score + meta$G2M.Score
+    score_configs <- append(score_configs, list(
+      list(col = "cycle_combined", title = "Combined Cell Cycle Score", color_scale = "magma")
+    ))
+  }
+
+  # Add root score if available (calculate from cluster-level scores)
+  if ("Prog1" %in% colnames(meta) && "Diff1" %in% colnames(meta) && "S.Score" %in% colnames(meta) && "G2M.Score" %in% colnames(meta)) {
+    # Calculate individual cell root scores
+    prog_scaled <- scales::rescale(meta$Prog1, to = c(0, 1))
+    cycle_scaled <- scales::rescale(meta$S.Score + meta$G2M.Score, to = c(0, 1))
+    diff_scaled <- scales::rescale(meta$Diff1, to = c(0, 1))
+    meta$root_score_individual <- 2*prog_scaled + 0.5*cycle_scaled - 3*diff_scaled
+
+    score_configs <- append(score_configs, list(
+      list(col = "root_score_individual", title = "Root Score (Individual)", color_scale = "inferno")
+    ))
+  }
+
+  # Create UMAP plot for each score
+  for (config in score_configs) {
+    col_name <- config$col
+    plot_title <- config$title
+    color_scale <- config$color_scale
+
+    if (col_name %in% colnames(meta)) {
+      score_values <- meta[[col_name]]
+
+      # Skip if all values are NA or missing
+      if (all(is.na(score_values))) {
+        message("[WARNING] Skipping ", plot_title, " - all values are NA")
+        next
+      }
+
+      # Create the plot
+      p <- ggplot2::ggplot(meta, ggplot2::aes(U1, U2, colour = !!rlang::sym(col_name))) +
+        ggplot2::geom_point(size = 0.6, alpha = 0.8) +
+        ggplot2::theme_minimal() +
+        ggplot2::theme(panel.background = ggplot2::element_rect(fill = "white", color = NA),
+                       plot.background = ggplot2::element_rect(fill = "white", color = NA)) +
+        ggplot2::labs(title = paste("UMAP -", plot_title),
+                      colour = gsub("\\.", " ", col_name))
+
+      # Apply appropriate color scale
+      if (color_scale == "viridis") {
+        p <- p + ggplot2::scale_colour_viridis_c(option = "D")
+      } else if (color_scale == "plasma") {
+        p <- p + ggplot2::scale_colour_viridis_c(option = "C")
+      } else if (color_scale == "magma") {
+        p <- p + ggplot2::scale_colour_viridis_c(option = "A")
+      } else if (color_scale == "inferno") {
+        p <- p + ggplot2::scale_colour_viridis_c(option = "B")
+      } else {
+        p <- p + ggplot2::scale_colour_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0)
+      }
+
+      # Highlight root cluster if specified
+      if (!is.null(start_cluster) && start_cluster %in% meta$seurat_clusters) {
+        root_cells <- meta[meta$seurat_clusters == start_cluster, ]
+        if (nrow(root_cells) > 0) {
+          p <- p + ggplot2::geom_point(data = root_cells,
+                                       ggplot2::aes(U1, U2),
+                                       colour = "black", size = 0.8, alpha = 0.6, shape = 1)
+        }
+      }
+
+      plot_name <- paste0("score_", gsub("\\.", "_", tolower(col_name)))
+      plots[[plot_name]] <- p
+
+      message("[DEBUG] Created score UMAP for: ", plot_title)
+    }
+  }
+
+  return(plots)
+}
+
+# ───────────────────── 7b. Score distribution plots ────────────────────────
+create_score_distributions <- function(meta) {
+  plots <- list()
+
+  # Score columns to analyze
+  score_columns <- c("S.Score", "G2M.Score", "Prog1", "Diff1")
+
+  # Add combined scores if available
+  if ("S.Score" %in% colnames(meta) && "G2M.Score" %in% colnames(meta)) {
+    meta$cycle_combined <- meta$S.Score + meta$G2M.Score
+    score_columns <- c(score_columns, "cycle_combined")
+  }
+
+  if ("root_score_individual" %in% colnames(meta)) {
+    score_columns <- c(score_columns, "root_score_individual")
+  }
+
+  for (score_col in score_columns) {
+    if (score_col %in% colnames(meta)) {
+      score_values <- meta[[score_col]]
+
+      # Skip if all values are NA
+      if (all(is.na(score_values))) {
+        next
+      }
+
+      # Create violin plot by cluster
+      p_violin <- ggplot2::ggplot(meta, ggplot2::aes(x = seurat_clusters, y = !!rlang::sym(score_col),
+                                                     fill = seurat_clusters)) +
+        ggplot2::geom_violin(alpha = 0.7) +
+        ggplot2::geom_boxplot(width = 0.2, alpha = 0.8, outlier.shape = NA) +
+        ggplot2::theme_minimal() +
+        ggplot2::theme(panel.background = ggplot2::element_rect(fill = "white", color = NA),
+                       plot.background = ggplot2::element_rect(fill = "white", color = NA),
+                       axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
+                       legend.position = "none") +
+        ggplot2::labs(title = paste("Distribution of", gsub("\\.", " ", score_col), "by Cluster"),
+                      x = "Cluster", y = gsub("\\.", " ", score_col))
+
+      # Create histogram
+      p_hist <- ggplot2::ggplot(meta, ggplot2::aes(x = !!rlang::sym(score_col))) +
+        ggplot2::geom_histogram(bins = 50, alpha = 0.7, fill = "steelblue", color = "white") +
+        ggplot2::theme_minimal() +
+        ggplot2::theme(panel.background = ggplot2::element_rect(fill = "white", color = NA),
+                       plot.background = ggplot2::element_rect(fill = "white", color = NA)) +
+        ggplot2::labs(title = paste("Histogram of", gsub("\\.", " ", score_col)),
+                      x = gsub("\\.", " ", score_col), y = "Count")
+
+      plot_name_violin <- paste0("dist_", gsub("\\.", "_", tolower(score_col)), "_violin")
+      plot_name_hist <- paste0("dist_", gsub("\\.", "_", tolower(score_col)), "_hist")
+
+      plots[[plot_name_violin]] <- p_violin
+      plots[[plot_name_hist]] <- p_hist
+    }
+  }
+
+  return(plots)
+}
+
+# ───────────────────── 7c. Score summary statistics ───────────────────────
+generate_score_summaries <- function(seurat, score_table, output_dir) {
+  message("[INFO] Generating score summary statistics...")
+
+  # Get metadata with scores
+  meta <- seurat@meta.data
+
+  # Define score columns to analyze
+  score_columns <- c("S.Score", "G2M.Score", "Prog1", "Diff1")
+
+  # Add combined cell cycle score
+  if ("S.Score" %in% colnames(meta) && "G2M.Score" %in% colnames(meta)) {
+    meta$cycle_combined <- meta$S.Score + meta$G2M.Score
+    score_columns <- c(score_columns, "cycle_combined")
+  }
+
+  # Add individual root scores
+  if ("Prog1" %in% colnames(meta) && "Diff1" %in% colnames(meta) && "S.Score" %in% colnames(meta) && "G2M.Score" %in% colnames(meta)) {
+    prog_scaled <- scales::rescale(meta$Prog1, to = c(0, 1))
+    cycle_scaled <- scales::rescale(meta$S.Score + meta$G2M.Score, to = c(0, 1))
+    diff_scaled <- scales::rescale(meta$Diff1, to = c(0, 1))
+    meta$root_score_individual <- 2*prog_scaled + 0.5*cycle_scaled - 3*diff_scaled
+    score_columns <- c(score_columns, "root_score_individual")
+  }
+
+  # 1. Overall summary statistics
+  overall_summary <- data.frame(
+    score = character(),
+    mean = numeric(),
+    median = numeric(),
+    sd = numeric(),
+    min = numeric(),
+    max = numeric(),
+    q25 = numeric(),
+    q75 = numeric(),
+    stringsAsFactors = FALSE
+  )
+
+  for (score_col in score_columns) {
+    if (score_col %in% colnames(meta)) {
+      values <- meta[[score_col]]
+      values <- values[!is.na(values)]  # Remove NA values
+
+      if (length(values) > 0) {
+        overall_summary <- rbind(overall_summary, data.frame(
+          score = score_col,
+          mean = mean(values),
+          median = median(values),
+          sd = sd(values),
+          min = min(values),
+          max = max(values),
+          q25 = quantile(values, 0.25),
+          q75 = quantile(values, 0.75),
+          stringsAsFactors = FALSE
+        ))
+      }
+    }
+  }
+
+  # 2. Cluster-wise summary statistics
+  cluster_summary <- data.frame(
+    cluster = character(),
+    score = character(),
+    mean = numeric(),
+    median = numeric(),
+    sd = numeric(),
+    min = numeric(),
+    max = numeric(),
+    q25 = numeric(),
+    q75 = numeric(),
+    n_cells = numeric(),
+    stringsAsFactors = FALSE
+  )
+
+  clusters <- unique(meta$seurat_clusters)
+  for (cluster in clusters) {
+    cluster_cells <- meta[meta$seurat_clusters == cluster, ]
+
+    for (score_col in score_columns) {
+      if (score_col %in% colnames(cluster_cells)) {
+        values <- cluster_cells[[score_col]]
+        values <- values[!is.na(values)]  # Remove NA values
+
+        if (length(values) > 0) {
+          cluster_summary <- rbind(cluster_summary, data.frame(
+            cluster = as.character(cluster),
+            score = score_col,
+            mean = mean(values),
+            median = median(values),
+            sd = sd(values),
+            min = min(values),
+            max = max(values),
+            q25 = quantile(values, 0.25),
+            q75 = quantile(values, 0.75),
+            n_cells = length(values),
+            stringsAsFactors = FALSE
+          ))
+        }
+      }
+    }
+  }
+
+  # 3. Enhanced cluster score table with additional metrics
+  enhanced_score_table <- score_table
+
+  # Add coefficient of variation and score ranges
+  for (cluster in clusters) {
+    cluster_cells <- meta[meta$seurat_clusters == cluster, ]
+    cluster_idx <- which(enhanced_score_table$cluster == cluster)
+
+    if (length(cluster_idx) > 0) {
+      # Add CV (coefficient of variation) for each score type
+      if ("Prog1" %in% colnames(cluster_cells)) {
+        prog_values <- cluster_cells$Prog1[!is.na(cluster_cells$Prog1)]
+        enhanced_score_table$prog_cv[cluster_idx] <- if(length(prog_values) > 0 && mean(prog_values) != 0) sd(prog_values) / abs(mean(prog_values)) else 0
+      }
+
+      if ("Diff1" %in% colnames(cluster_cells)) {
+        diff_values <- cluster_cells$Diff1[!is.na(cluster_cells$Diff1)]
+        enhanced_score_table$diff_cv[cluster_idx] <- if(length(diff_values) > 0 && mean(diff_values) != 0) sd(diff_values) / abs(mean(diff_values)) else 0
+      }
+
+      if ("S.Score" %in% colnames(cluster_cells) && "G2M.Score" %in% colnames(cluster_cells)) {
+        cycle_values <- (cluster_cells$S.Score + cluster_cells$G2M.Score)[!is.na(cluster_cells$S.Score + cluster_cells$G2M.Score)]
+        enhanced_score_table$cycle_cv[cluster_idx] <- if(length(cycle_values) > 0 && mean(cycle_values) != 0) sd(cycle_values) / abs(mean(cycle_values)) else 0
+      }
+    }
+  }
+
+  # 4. Score correlation matrix
+  score_correlations <- NULL
+  available_scores <- score_columns[score_columns %in% colnames(meta)]
+  if (length(available_scores) > 1) {
+    score_data <- meta[, available_scores, drop = FALSE]
+    score_data <- score_data[complete.cases(score_data), ]  # Remove rows with any NA
+
+    if (nrow(score_data) > 10) {  # Need sufficient data for correlation
+      score_correlations <- cor(score_data, use = "complete.obs")
+    }
+  }
+
+  # Export summary files
+  tryCatch({
+    # Overall summary
+    readr::write_tsv(overall_summary, fs::path(output_dir, "score_summary_overall.tsv"))
+    message("[INFO] Overall score summary saved → ", fs::path_abs(fs::path(output_dir, "score_summary_overall.tsv")))
+
+    # Cluster-wise summary
+    readr::write_tsv(cluster_summary, fs::path(output_dir, "score_summary_by_cluster.tsv"))
+    message("[INFO] Cluster-wise score summary saved → ", fs::path_abs(fs::path(output_dir, "score_summary_by_cluster.tsv")))
+
+    # Enhanced cluster score table
+    readr::write_tsv(enhanced_score_table, fs::path(output_dir, "cluster_scores_enhanced.tsv"))
+    message("[INFO] Enhanced cluster scores saved → ", fs::path_abs(fs::path(output_dir, "cluster_scores_enhanced.tsv")))
+
+    # Score correlations (if available)
+    if (!is.null(score_correlations)) {
+      correlation_df <- as.data.frame(score_correlations)
+      correlation_df$score <- rownames(correlation_df)
+      correlation_df <- correlation_df[, c("score", colnames(score_correlations))]
+      readr::write_tsv(correlation_df, fs::path(output_dir, "score_correlations.tsv"))
+      message("[INFO] Score correlations saved → ", fs::path_abs(fs::path(output_dir, "score_correlations.tsv")))
+    }
+
+  }, error = function(e) {
+    message("[ERROR] Failed to save score summaries: ", e$message)
+  })
+
+  # Return summary data for potential further use
+  return(list(
+    overall = overall_summary,
+    by_cluster = cluster_summary,
+    enhanced_scores = enhanced_score_table,
+    correlations = score_correlations
+  ))
 }
 
 save_plots <- function(plot_list,
@@ -581,22 +1191,32 @@ save_plots <- function(plot_list,
 create_separate_mst_plots <- function(sce,
                                      seurat_obj,
                                      output_dir,
+                                     marker_file = NULL,
                                      umap_dims = 1:2,
                                      linewidth = 0.8,
                                      arrow_len = 0.35,
                                      arrow_angle = 25) {
 
   message("[INFO] Creating separate MST plots...")
+  message("[DEBUG] Function arguments - output_dir: ", output_dir)
+  message("[DEBUG] Function arguments - marker_file: ", ifelse(is.null(marker_file), "NULL", marker_file))
 
   # Ensure output directory exists
   if (!dir.exists(output_dir)) {
     dir.create(output_dir, recursive = TRUE)
+    message("[DEBUG] Created output directory: ", output_dir)
+  } else {
+    message("[DEBUG] Output directory already exists: ", output_dir)
   }
 
   # Create markers subdirectory
   markers_dir <- file.path(output_dir, "markers")
+  message("[DEBUG] Markers directory path: ", markers_dir)
   if (!dir.exists(markers_dir)) {
     dir.create(markers_dir, recursive = TRUE)
+    message("[DEBUG] Created markers directory: ", markers_dir)
+  } else {
+    message("[DEBUG] Markers directory already exists: ", markers_dir)
   }
 
   # Define variables for different plot types
@@ -604,9 +1224,7 @@ create_separate_mst_plots <- function(sce,
   # Prioritize proper cell type annotations over clustering results
   celltype_vars <- c("cell_type_cluster_weighted", "cell_type_cluster", "cell_type",
                      "celltype", "predicted.celltype", "predicted_celltype", "annotation", "scpred_prediction")
-  print(colnames(seurat_obj@meta.data))
-  seurat_obj@meta.data %>%
-  write_tsv("/home/yuyasato/work3/vhco_season2/2_vascularized/trajectory/integrated/test.metadata.tsv")
+  message("[DEBUG] Available metadata columns: ", paste(colnames(seurat_obj@meta.data), collapse = ", "))
   # Find available cluster variables
   available_cluster_vars <- cluster_vars[
     cluster_vars %in% c(colnames(seurat_obj@meta.data),
@@ -620,18 +1238,67 @@ create_separate_mst_plots <- function(sce,
   ]
 
   # Get marker genes - USE ALL MARKERS instead of limited subset
-  marker_file <- "/home/yuyasato/work3/vhco_season2/meta/__markers.tsv"
-  if (file.exists(marker_file)) {
-    all_marker_genes <- readr::read_tsv(marker_file, show_col_types = FALSE)$gene |>
-                        intersect(rownames(seurat_obj))
+  message("[DEBUG] Checking marker file existence...")
+  message("[DEBUG] marker_file is NULL: ", is.null(marker_file))
+  if (!is.null(marker_file)) {
+    message("[DEBUG] marker_file value: ", marker_file)
+    message("[DEBUG] file.exists(marker_file): ", file.exists(marker_file))
+  }
+
+  if (!is.null(marker_file) && file.exists(marker_file)) {
+    message("[DEBUG] Reading marker file: ", marker_file)
+    tryCatch({
+      marker_data <- readr::read_tsv(marker_file, show_col_types = FALSE)
+      message("[DEBUG] Marker file columns: ", paste(colnames(marker_data), collapse = ", "))
+      message("[DEBUG] Marker file rows: ", nrow(marker_data))
+
+      if ("gene" %in% colnames(marker_data)) {
+        all_marker_genes <- marker_data$gene |>
+                            intersect(rownames(seurat_obj))
+
+        # More detailed debugging
+        message("[DEBUG] Total genes in marker file: ", length(marker_data$gene))
+        message("[DEBUG] Total genes in Seurat object: ", length(rownames(seurat_obj)))
+        message("[DEBUG] Genes found in Seurat object: ", length(all_marker_genes))
+        message("[DEBUG] Available Seurat genes (first 10): ", paste(head(rownames(seurat_obj), 10), collapse = ", "))
+        message("[DEBUG] Marker genes (first 10): ", paste(head(marker_data$gene, 10), collapse = ", "))
+        message("[DEBUG] Found marker genes (first 10): ", paste(head(all_marker_genes, 10), collapse = ", "))
+
+        # Check for missing genes
+        missing_genes <- setdiff(marker_data$gene, rownames(seurat_obj))
+        if (length(missing_genes) > 0) {
+          message("[WARNING] ", length(missing_genes), " marker genes not found in Seurat object")
+          message("[WARNING] Missing genes (first 10): ", paste(head(missing_genes, 10), collapse = ", "))
+        }
+
+        # Test actual expression values for found genes
+        if (length(all_marker_genes) > 0) {
+          test_gene <- all_marker_genes[1]
+          tryCatch({
+            test_expr <- LayerData(seurat_obj, layer = "data", features = test_gene)
+            expr_range <- range(as.numeric(test_expr[1, ]))
+            message("[DEBUG] Test gene ", test_gene, " expression range: [", expr_range[1], ", ", expr_range[2], "]")
+            message("[DEBUG] Test gene ", test_gene, " non-zero cells: ", sum(as.numeric(test_expr[1, ]) > 0))
+          }, error = function(e) {
+            message("[ERROR] Failed to get expression for test gene ", test_gene, ": ", e$message)
+          })
+        }
+      } else {
+        message("[ERROR] 'gene' column not found in marker file. Available columns: ", paste(colnames(marker_data), collapse = ", "))
+        all_marker_genes <- c()
+      }
+    }, error = function(e) {
+      message("[ERROR] Failed to read marker file: ", e$message)
+      all_marker_genes <- c()
+    })
 
     # Use ALL available marker genes for comprehensive visualization
     selected_marker_genes <- all_marker_genes
 
-    message("[DEBUG] Found ", length(all_marker_genes), " marker genes in dataset")
+    message("[DEBUG] Selected ", length(selected_marker_genes), " marker genes for plotting")
   } else {
     selected_marker_genes <- c()
-    message("[WARNING] Marker file not found: ", marker_file)
+    message("[WARNING] Marker file not found or NULL: ", ifelse(is.null(marker_file), "NULL", marker_file))
   }
 
   message("[DEBUG] Available cluster vars: ", paste(available_cluster_vars, collapse = ", "))
@@ -640,18 +1307,23 @@ create_separate_mst_plots <- function(sce,
 
   # Create individual MST plotting function
   create_single_mst_plot <- function(var_name) {
+    message("[DEBUG] create_single_mst_plot called for: ", var_name)
     tryCatch({
+      message("[DEBUG] Calling plotSlingshotMST_latent for: ", var_name)
       mst_plot <- plotSlingshotMST_latent(sce,
                                          seurat_obj,
                                          group_vars = var_name,
+                                         marker_file = marker_file,
                                          umap_dims = umap_dims,
                                          linewidth = linewidth,
                                          arrow_len = arrow_len,
                                          arrow_angle = arrow_angle,
                                          ncol_panels = 1)
+      message("[DEBUG] plotSlingshotMST_latent returned object of class: ", class(mst_plot)[1])
       return(mst_plot)
     }, error = function(e) {
       message("[ERROR] Failed to create MST plot for '", var_name, "': ", e$message)
+      message("[ERROR] Error trace: ", paste(sys.calls(), collapse = " -> "))
       return(NULL)
     })
   }
@@ -701,23 +1373,59 @@ create_separate_mst_plots <- function(sce,
   }
 
   # 3. Create individual marker gene plots
-  for (marker in selected_marker_genes) {
+  message("[DEBUG] Starting marker gene plot creation...")
+  message("[DEBUG] Number of selected marker genes: ", length(selected_marker_genes))
+
+  if (length(selected_marker_genes) == 0) {
+    message("[WARNING] No marker genes selected for plotting")
+  } else {
+    message("[DEBUG] Will create plots for markers: ", paste(selected_marker_genes, collapse = ", "))
+  }
+
+  # Memory management: limit concurrent processing and add garbage collection
+  gc()  # Force garbage collection before starting
+
+  for (i in seq_along(selected_marker_genes)) {
+    marker <- selected_marker_genes[i]
+    message("[DEBUG] Processing marker ", i, "/", length(selected_marker_genes), ": ", marker)
+
     marker_plot <- create_single_mst_plot(marker)
+    message("[DEBUG] create_single_mst_plot returned: ", class(marker_plot)[1])
 
     if (!is.null(marker_plot)) {
       marker_filename <- paste0(marker, ".png")
+      output_path <- file.path(markers_dir, marker_filename)
+      message("[DEBUG] Attempting to save plot to: ", output_path)
+
       tryCatch({
-        ggplot2::ggsave(file.path(markers_dir, marker_filename),
+        ggplot2::ggsave(output_path,
                         plot = marker_plot,
                         width = 20,
                         height = 18,
                         units = "cm",
                         dpi = 300)
-        message("[INFO] Saved markers/", marker_filename)
-        plots_created <- plots_created + 1
+
+        # Verify file was created
+        if (file.exists(output_path)) {
+          file_size <- file.info(output_path)$size
+          message("[SUCCESS] Saved markers/", marker_filename, " (", file_size, " bytes)")
+          plots_created <- plots_created + 1
+        } else {
+          message("[ERROR] File was not created: ", output_path)
+        }
       }, error = function(e) {
         message("[ERROR] Failed to save markers/", marker_filename, ": ", e$message)
+        message("[ERROR] Error class: ", class(e)[1])
+        message("[ERROR] Error call: ", deparse(e$call))
       })
+    } else {
+      message("[WARNING] create_single_mst_plot returned NULL for marker: ", marker)
+    }
+
+    # Memory management: periodic garbage collection every 10 plots
+    if (i %% 10 == 0) {
+      gc()
+      message("[DEBUG] Garbage collection performed after ", i, " plots")
     }
   }
 
@@ -757,6 +1465,7 @@ create_lineage_legend <- function(sce, lineage_colors) {
 plotSlingshotMST_latent <- function(sce,
                                     seurat_obj,
                                     group_vars,
+                                    marker_file = NULL,
                                     umap_dims   = 1:2,
                                     linewidth   = 0.8,
                                     arrow_len   = 0.35,
@@ -877,12 +1586,33 @@ plotSlingshotMST_latent <- function(sce,
         cat("[DEBUG] Found '", var, "' as gene in Seurat\n")
         # Use normalized expression from data layer (log-normalized counts)
         expr_data <- tryCatch({
-          LayerData(seurat_obj, layer = "data", features = var)
+          cat("[DEBUG] Getting data layer for gene: ", var, "\n")
+          expr <- LayerData(seurat_obj, layer = "data", features = var)
+          cat("[DEBUG] Successfully retrieved data layer for: ", var, ", dimensions: ", paste(dim(expr), collapse="x"), "\n")
+          expr
         }, error = function(e) {
-          cat("[WARNING] Failed to get data layer, trying counts layer: ", e$message, "\n")
-          LayerData(seurat_obj, layer = "counts", features = var)
+          cat("[WARNING] Failed to get data layer for ", var, ", trying counts layer: ", e$message, "\n")
+          tryCatch({
+            expr <- LayerData(seurat_obj, layer = "counts", features = var)
+            cat("[DEBUG] Successfully retrieved counts layer for: ", var, ", dimensions: ", paste(dim(expr), collapse="x"), "\n")
+            expr
+          }, error = function(e2) {
+            cat("[ERROR] Failed to get both data and counts layers for ", var, ": ", e2$message, "\n")
+            return(NULL)
+          })
         })
-        as.numeric(expr_data[1, ])
+
+        if (is.null(expr_data)) {
+          cat("[ERROR] Could not retrieve expression data for gene: ", var, "\n")
+          return(NULL)
+        }
+
+        gene_expr <- as.numeric(expr_data[1, ])
+        expr_range <- range(gene_expr, na.rm = TRUE)
+        non_zero_cells <- sum(gene_expr > 0, na.rm = TRUE)
+        cat("[DEBUG] Gene ", var, " expression range: [", expr_range[1], ", ", expr_range[2], "], non-zero cells: ", non_zero_cells, "/", length(gene_expr), "\n")
+
+        gene_expr
       } else {
         cat("[WARNING] Variable '", var, "' not found anywhere, skipping\n")
         return(NULL)
@@ -1089,6 +1819,20 @@ plotSlingshotMST_latent <- function(sce,
     return(legend_panel)
   }
 
+  # SPECIAL CASE: If only one group_var provided and it's a gene, return just that gene's plot
+  if (length(group_vars) == 1 && group_vars[1] %in% rownames(seurat_obj)) {
+    gene_name <- group_vars[1]
+    cat("[DEBUG] Single gene request detected: ", gene_name, "\n")
+    if (gene_name %in% names(non_legend_panels)) {
+      gene_plot <- non_legend_panels[[gene_name]] +
+        ggplot2::labs(title = paste("Expression:", gene_name))
+      cat("[DEBUG] Returning single gene plot for: ", gene_name, "\n")
+      return(gene_plot)
+    } else {
+      cat("[WARNING] Gene ", gene_name, " not found in panels\n")
+    }
+  }
+
   # Prioritize important panels
   cell_type_panels <- non_legend_panels[grepl("leiden_scvi|cell_type|celltype|annotation",
                                              names(non_legend_panels), ignore.case = TRUE)]
@@ -1223,14 +1967,15 @@ run_pipeline <- function(sample_id,
                          marker_file     = "/home/yuyasato/work3/vhco_season2/meta/__markers.tsv",
                          resolution      = 0.5,
                          latent_dims     = 1:10,
-                         use_cache       = FALSE) {
+                         use_cache       = FALSE,
+                         exclude_json    = NULL) {
 
   load_libraries()
 
-  # Output paths
-  path_dist  <- fs::path(out_dir, "dist",  sample_id)
-  path_fig   <- fs::path(out_dir, "figs",  sample_id)
-  path_cache <- fs::path(out_dir, "cache", sample_id)
+  # Output paths - simplified structure without extra sample_id subdirectories
+  path_dist  <- fs::path(out_dir, "dist")
+  path_fig   <- fs::path(out_dir, "figs")
+  path_cache <- fs::path(out_dir, "cache")
   walk(list(path_dist, path_fig, path_cache), dir.create,
        recursive = TRUE, showWarnings = FALSE)
 
@@ -1238,20 +1983,32 @@ run_pipeline <- function(sample_id,
   cache_sce <- fs::path(path_cache, "sce.rds")
 
   # ── 1. Seurat object ──────────────────────────────────────────────────
-  seurat <- if (use_cache && file.exists(cache_seu)) {
+  # Don't use cache if exclude filters are specified (since cached object won't have filtering applied)
+  use_cache_with_exclude <- use_cache && (is.null(exclude_json) || exclude_json == "" || exclude_json == "null")
+
+  seurat <- if (use_cache_with_exclude && file.exists(cache_seu)) {
               message("[INFO] Reusing cached Seurat → ", cache_seu)
               readRDS(cache_seu)
             } else {
+              if (!is.null(exclude_json) && exclude_json != "" && exclude_json != "null") {
+                message("[INFO] Exclude filters specified, bypassing cache to apply filtering")
+              }
               read_inputs(h5ad_file,
                           progenitor,
                           differentiation,
                           marker_file) |>
+              apply_exclude_filters(exclude_json = exclude_json) |>
               preprocess_seurat_latent(latent_dims = latent_dims,
                                        resolution  = resolution) |>
               score_cell_cycle()
             }
 
-  saveRDS(seurat, cache_seu)
+  if (!no_rds) {
+    saveRDS(seurat, cache_seu)
+    message("[DEBUG] Seurat object cached to: ", cache_seu)
+  } else {
+    message("[DEBUG] Skipping Seurat RDS save due to --no_rds option")
+  }
 
   # ── 2. Root cluster ───────────────────────────────────────────────────
   root_info <- select_root_cluster(seurat,
@@ -1273,7 +2030,7 @@ run_pipeline <- function(sample_id,
   }
   message("[DEBUG] Using latent reduction for slingshot: ", latent_reduction_name)
 
-  sce <- if (use_cache && file.exists(cache_sce)) {
+  sce <- if (use_cache_with_exclude && file.exists(cache_sce)) {
            message("[INFO] Reusing cached SCE → ", cache_sce)
            readRDS(cache_sce)
          } else {
@@ -1302,24 +2059,40 @@ run_pipeline <- function(sample_id,
          }
 
   # Save results with error handling
-  tryCatch({
-    saveRDS(sce, cache_sce)
-    message("[DEBUG] SCE object cached successfully")
-  }, error = function(e) {
-    message("[WARNING] Failed to cache SCE object: ", e$message)
-  })
+  if (!no_rds) {
+    tryCatch({
+      saveRDS(sce, cache_sce)
+      message("[DEBUG] SCE object cached successfully to: ", cache_sce)
+    }, error = function(e) {
+      message("[WARNING] Failed to cache SCE object: ", e$message)
+    })
+  } else {
+    message("[DEBUG] Skipping SCE RDS save due to --no_rds option")
+  }
 
   # ── 4. Plots & exports ────────────────────────────────────────────────
   tryCatch({
-    message("[INFO] Creating basic plots...")
+    message("[INFO] Creating comprehensive plots and summaries...")
     plots <- make_plots(root_info$seurat,
                         root_info$score_table,
                         root_info$start_cluster)
     save_plots(plots, path_fig)
-    message("[DEBUG] Basic plots saved successfully")
+    message("[DEBUG] Plots saved successfully")
   }, error = function(e) {
-    message("[ERROR] Failed to create basic plots: ", e$message)
-    message("[WARNING] Continuing without basic plots...")
+    message("[ERROR] Failed to create plots: ", e$message)
+    message("[WARNING] Continuing without plots...")
+  })
+
+  # Generate and export score summaries
+  tryCatch({
+    message("[INFO] Generating score summaries and statistics...")
+    score_summaries <- generate_score_summaries(root_info$seurat,
+                                               root_info$score_table,
+                                               path_dist)
+    message("[DEBUG] Score summaries generated successfully")
+  }, error = function(e) {
+    message("[ERROR] Failed to generate score summaries: ", e$message)
+    message("[WARNING] Continuing without score summaries...")
   })
 
   # Define plot variables with priority: cell types first, then ALL markers
@@ -1363,7 +2136,8 @@ run_pipeline <- function(sample_id,
   tryCatch({
     plots_created <- create_separate_mst_plots(sce,
                                               root_info$seurat,
-                                              output_dir = path_fig)
+                                              output_dir = path_fig,
+                                              marker_file = canonical_marker_tsv)
 
     if (plots_created > 0) {
       message("[INFO] Successfully created ", plots_created, " separate MST plots")
@@ -1450,6 +2224,8 @@ if (!interactive()) {
   root_marker_tsv <- "/home/yuyasato/work3/vhco_season2/meta/__root_markers.tsv"
   canonical_marker_tsv <- "/home/yuyasato/work3/vhco_season2/meta/__markers.tsv"
   force_rerun <- FALSE
+  no_rds <- FALSE
+  exclude_json <- NULL
 
   # Parse arguments
   i <- 1
@@ -1488,6 +2264,12 @@ if (!interactive()) {
     } else if (args[i] == "--force_rerun") {
       force_rerun <- toupper(args[i + 1]) == "TRUE"
       i <- i + 2
+    } else if (args[i] == "--no_rds") {
+      no_rds <- toupper(args[i + 1]) == "TRUE"
+      i <- i + 2
+    } else if (args[i] == "--exclude") {
+      exclude_json <- args[i + 1]
+      i <- i + 2
     } else {
       i <- i + 1
     }
@@ -1507,6 +2289,8 @@ if (!interactive()) {
     cat("  --root_marker_tsv FILE       Root markers file\n")
     cat("  --canonical_marker_tsv FILE  Canonical markers file\n")
     cat("  --force_rerun TRUE/FALSE     Force rerun (default: FALSE)\n")
+    cat("  --no_rds TRUE/FALSE          Skip saving RDS files for speed (default: FALSE)\n")
+    cat("  --exclude JSON               Exclude cells based on metadata (JSON format)\n")
     quit(status = 1)
   }
 
@@ -1519,7 +2303,8 @@ if (!interactive()) {
       marker_file = canonical_marker_tsv,
       resolution = resolution,
       latent_dims = latent_dims,
-      use_cache = !force_rerun
+      use_cache = !force_rerun,
+      exclude_json = exclude_json
     )
     cat("Pipeline completed successfully for sample:", sample_id, "\n")
   }, error = function(e) {

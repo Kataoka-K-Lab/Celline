@@ -326,7 +326,7 @@ class Integrate(CellineFunction):
                 console.print(f"[cyan]Found cached integration for requested samples: {', '.join(self.sample_list)}[/cyan]")
                 # Create dummy target_samples for celltype mapping
                 target_samples = []
-                all_samples = SampleResolver.samples()
+                all_samples = SampleResolver.samples
                 console.print(f"[dim]SampleResolver has {len(all_samples)} samples: {list(all_samples.keys())}[/dim]")
 
                 for sample_id in self.sample_list:
@@ -403,7 +403,7 @@ class Integrate(CellineFunction):
         """Collect target samples based on filter function."""
         target_samples: list[SampleInfo] = []
 
-        all_samples = SampleResolver.samples()
+        all_samples = SampleResolver.samples
         console.print(f"[dim]SampleResolver found {len(all_samples)} samples: {list(all_samples.keys())}[/dim]")
 
         for info in all_samples.values():

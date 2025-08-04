@@ -462,7 +462,7 @@ class PredictCelltype(CellineFunction):
         return "predict_celltype"
 
     def call(self, project: "Project"):
-        for sample in SampleResolver.samples().values():
+        for sample in SampleResolver.samples.values():
             if not sample.path.is_counted:
                 continue
             try:
