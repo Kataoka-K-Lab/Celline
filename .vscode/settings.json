@@ -66,5 +66,8 @@
   },
 
   // “Black など他のフォーマッター” が競合する場合はここで無効化
-  "python.formatting.provider": "none"
+  "python.formatting.provider": "none",
+  "[ignore]": {
+    "editor.defaultFormatter": "foxundermoon.shell-format"
+  }
 }

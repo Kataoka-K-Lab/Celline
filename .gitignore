@@ -2,3 +2,4 @@ __pycache__/
 obsolete/
 .env
 test/
+test*
