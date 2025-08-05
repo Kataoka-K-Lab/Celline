@@ -7,11 +7,9 @@ from collections.abc import Callable
 # from celline.database import NCBI, GSE, GSM
 from typing import Final
 
-import pyper as pr
 import toml
 
 from celline.config import Config, Setting
-from celline.data import Seurat
 from celline.functions._base import CellineFunction
 from celline.middleware import ThreadObservable
 from celline.server import ServerSystem
@@ -28,13 +26,25 @@ class Project:
         """#### Load or create new celline project"""
 
         def get_r_path() -> str:
-            with subprocess.Popen(
-                "which R",
-                stdout=subprocess.PIPE,
-                shell=True,
-            ) as proc:
-                result = proc.communicate()
-            return result[0].decode("utf-8").replace("\n", "")
+            # Try common R installation paths first (faster)
+            common_paths = ["/usr/bin/R", "/usr/local/bin/R", "/opt/homebrew/bin/R"]
+            for path in common_paths:
+                if os.path.exists(path) and os.access(path, os.X_OK):
+                    return path
+            
+            # Fallback to system search only if needed
+            try:
+                with subprocess.Popen(
+                    "which R",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,  # Suppress error output
+                    shell=True,
+                    timeout=2  # Add timeout to prevent hanging
+                ) as proc:
+                    result = proc.communicate()
+                return result[0].decode("utf-8").strip()
+            except (subprocess.TimeoutExpired, Exception):
+                return "/usr/bin/R"  # Default fallback
 
         def get_default_proj_name() -> str:
             return os.path.basename(project_dir)
@@ -43,9 +53,13 @@ class Project:
         self.PROJ_PATH = os.path.abspath(project_dir)
         Config.EXEC_ROOT = self.EXEC_PATH
         Config.PROJ_ROOT = self.PROJ_PATH
-        if not os.path.isfile(f"{self.PROJ_PATH}/setting.toml"):
+        
+        # Only initialize settings if setting.toml doesn't exist
+        setting_file = f"{self.PROJ_PATH}/setting.toml"
+        if not os.path.isfile(setting_file):
             Setting.name = get_default_proj_name() if proj_name == "" else proj_name
-            Setting.r_path = get_r_path() if r_path == "" else r_path
+            # Only get R path when actually needed (lazy initialization)
+            Setting.r_path = r_path if r_path else ""
             Setting.version = "0.01"
             Setting.wait_time = 4
             # Initialize execution settings with defaults
@@ -174,6 +188,9 @@ class Project:
         identifier: str = "seurat.seurat"
         path = Path(project_id, sample_id)
         seurat_path = f"{path.data_sample}/{identifier}"
+        
+        # Lazy import pyper only when needed
+        import pyper as pr
         r: pr.R = pr.R(RCMD=Setting.r_path, use_pandas=True)
         r.assign(
             "h5_path",

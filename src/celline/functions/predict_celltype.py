@@ -1,10 +1,11 @@
 import argparse
+import hashlib
 import os
 import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path as PathLib
-from typing import TYPE_CHECKING, Dict, Final, List, NamedTuple, Optional
+from typing import TYPE_CHECKING, Dict, Final, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -33,6 +34,21 @@ console = Console()
 class CellTypeModel:
     species: str
     suffix: str | None
+    mode: str = "canonical"  # "canonical" or "reference"
+    
+    def get_cache_key(self) -> str:
+        """Generate cache key for this model configuration"""
+        key_parts = [self.species.replace(" ", "_"), self.mode]
+        if self.suffix:
+            key_parts.append(self.suffix)
+        return "_".join(key_parts)
+    
+    def get_reference_dir(self) -> str:
+        """Get reference directory path"""
+        base_dir = f"{Config.PROJ_ROOT}/reference/{self.species.replace(' ', '_')}"
+        if self.suffix:
+            return f"{base_dir}/{self.suffix}"
+        return f"{base_dir}/default"
 
 
 # =============================================================================
@@ -450,75 +466,529 @@ class BuildCellTypeModel(CellineFunction):
         return project
 
 
-class PredictCelltype(CellineFunction):
-    """Full cell type prediction with marker-based annotation"""
+class ReferenceManager:
+    """Manages reference models for different species/tissues/modes"""
+    
+    def __init__(self):
+        self.base_cache_dir = f"{Config.PROJ_ROOT}/reference"
+        os.makedirs(self.base_cache_dir, exist_ok=True)
+    
+    def get_reference_path(self, model: CellTypeModel) -> str:
+        """Get path for reference model"""
+        return model.get_reference_dir()
+    
+    def reference_exists(self, model: CellTypeModel) -> bool:
+        """Check if reference model exists"""
+        ref_dir = self.get_reference_path(model)
+        if model.mode == "reference":
+            return (os.path.exists(f"{ref_dir}/reference.pred") and 
+                   os.path.exists(f"{ref_dir}/reference.h5seurat"))
+        return True  # Canonical mode doesn't need reference files
+    
+    def get_compatible_samples(self, model: CellTypeModel) -> List[str]:
+        """Get samples compatible with this model"""
+        compatible_samples = []
+        for sample in SampleResolver.samples.values():
+            if (sample.schema.species.replace(" ", "_") == 
+                model.species.replace(" ", "_")):
+                compatible_samples.append(sample.schema.key)
+        return compatible_samples
+    
+    def create_reference_hash(self, h5matrix_path: str, celltype_path: str) -> str:
+        """Create hash for reference data to detect changes"""
+        hash_md5 = hashlib.md5()
+        # Hash file paths and modification times
+        content = f"{h5matrix_path}_{os.path.getmtime(h5matrix_path) if os.path.exists(h5matrix_path) else 0}"
+        content += f"{celltype_path}_{os.path.getmtime(celltype_path) if os.path.exists(celltype_path) else 0}"
+        hash_md5.update(content.encode('utf-8'))
+        return hash_md5.hexdigest()[:8]
 
-    def __init__(self, marker_path: str | None = None, abs_threshold: float = 0.08, force_rerun: bool = False) -> None:
+
+class BuildCellTypeReference(CellineFunction):
+    """Build scPred reference model for cell type prediction"""
+    
+    class JobContainer(NamedTuple):
+        nthread: str
+        cluster_server: str
+        jobname: str
+        logpath: str
+        h5matrix_path: str
+        celltype_path: str
+        dist_dir: str
+        r_path: str
+        exec_root: str
+        mode: str
+    
+    def __init__(self, species: str, suffix: Optional[str], nthread: int, 
+                 h5matrix_path: str, celltype_path: str, mode: str = "reference") -> None:
+        # Validation
+        if not celltype_path.endswith(".tsv"):
+            rich.print("[bold red]Build Error[/] celltype_path should be .tsv file path.")
+            self.__show_help()
+            sys.exit(1)
+            
+        _df = pl.read_csv(celltype_path, separator="\t")
+        expected_cols = ["cell", "celltype"] if mode == "reference" else ["cell", "celltype"]
+        if _df.columns != expected_cols:
+            rich.print(f"[bold red]Build Error[/] celltype dataframe should have columns: {expected_cols}")
+            self.__show_help()
+            sys.exit(1)
+            
+        self.model = CellTypeModel(species, suffix, mode)
+        self.nthread = nthread
+        self.cluster_server = ServerSystem.cluster_server_name
+        self.h5matrix_path = h5matrix_path
+        self.celltype_path = celltype_path
+        self.reference_manager = ReferenceManager()
+    
+    def __show_help(self):
+        df = pd.DataFrame({
+            "cell": ["cell_1", "cell_2", "cell_3"],
+            "celltype": ["Astrocyte", "Oligodendrocyte", "Neuron"]
+        })
+        table = Table(show_header=True, header_style="bold magenta")
+        for column in df.columns:
+            table.add_column(column)
+        for _, row in df.iterrows():
+            table.add_row(*row.astype(str).tolist())
+        
+        rich.print("""
+[bold green]:robot: Reference Model Builder[/]
+
+* [bold]h5matrix_path<str>[/]: H5 matrix path from Cell Ranger
+* [bold]celltype_path<str>[/]: Cell type annotations in TSV format
+""")
+        console.print(table)
+    
+    def call(self, project: "Project"):
+        dist_dir = self.reference_manager.get_reference_path(self.model)
+        
+        # Create hash for reference data versioning
+        ref_hash = self.reference_manager.create_reference_hash(
+            self.h5matrix_path, self.celltype_path)
+        hash_file = f"{dist_dir}/reference.hash"
+        
+        # Check if rebuild is needed
+        rebuild_needed = True
+        if os.path.exists(hash_file):
+            with open(hash_file, 'r') as f:
+                existing_hash = f.read().strip()
+            if existing_hash == ref_hash and self.reference_manager.reference_exists(self.model):
+                rebuild_needed = False
+                console.print(f"[green]Reference model is up to date: {dist_dir}[/green]")
+        
+        if rebuild_needed:
+            # Clean and recreate directory
+            if os.path.exists(dist_dir):
+                shutil.rmtree(dist_dir)
+            os.makedirs(dist_dir, exist_ok=True)
+            
+            console.print(f"[cyan]Building reference model: {self.model.get_cache_key()}[/cyan]")
+            
+            # Generate build script
+            TemplateManager.replace_from_file(
+                file_name="build_reference_scpred.sh",
+                structure=self.JobContainer(
+                    nthread=str(self.nthread),
+                    cluster_server="" if self.cluster_server is None else self.cluster_server,
+                    jobname="BuildReferenceScPred",
+                    logpath=f"{dist_dir}/build.log",
+                    h5matrix_path=self.h5matrix_path,
+                    dist_dir=dist_dir,
+                    celltype_path=self.celltype_path,
+                    r_path=f"{Setting.r_path}script",
+                    exec_root=Config.EXEC_ROOT,
+                    mode=self.model.mode
+                ),
+                replaced_path=f"{dist_dir}/build.sh"
+            )
+            
+            # Execute build
+            ThreadObservable.call_shell([f"{dist_dir}/build.sh"]).watch()
+            
+            # Save hash
+            with open(hash_file, 'w') as f:
+                f.write(ref_hash)
+                
+            console.print(f"[green]Reference model built successfully: {dist_dir}[/green]")
+        
+        return project
+
+
+class PredictCelltype(CellineFunction):
+    """Dual-mode cell type prediction with canonical marker-based and reference scPred modes
+    
+    Modes:
+    - canonical: Original marker-based weighted scoring (default)
+    - reference: scPred reference-based prediction using trained models
+    """
+
+    def __init__(self, marker_path: str | None = None, abs_threshold: float = 0.08, 
+                 force_rerun: bool = False, mode: str = "canonical", 
+                 species: str = "Homo sapiens", suffix: str | None = None) -> None:
+        self.mode = mode
         self.marker_path = marker_path
         self.abs_threshold = abs_threshold
         self.force_rerun = force_rerun
+        self.species = species
+        self.suffix = suffix
+        
+        # Initialize managers for reference mode
+        self.reference_manager = ReferenceManager()
+        
+        # Validate mode
+        if self.mode not in ["canonical", "reference"]:
+            raise ValueError(f"Invalid mode '{self.mode}'. Must be 'canonical' or 'reference'")
+        
+        # For reference mode, check if reference exists
+        if self.mode == "reference":
+            self.model = CellTypeModel(species, suffix, mode)
+            if not self.reference_manager.reference_exists(self.model):
+                console.print(f"[yellow]Warning: Reference model not found for {self.model.get_cache_key()}[/yellow]")
+                console.print(f"[cyan]Please build reference first using BuildCellTypeReference[/cyan]")
 
     def register(self) -> str:
         return "predict_celltype"
 
     def call(self, project: "Project"):
+        if self.mode == "canonical":
+            return self._run_canonical_mode(project)
+        elif self.mode == "reference":
+            return self._run_reference_mode(project)
+        else:
+            raise ValueError(f"Unsupported mode: {self.mode}")
+    
+    def _run_canonical_mode(self, project: "Project"):
+        """Run original marker-based prediction"""
+        console.print(f"[cyan]Running canonical marker-based prediction...[/cyan]")
+        
         for sample in SampleResolver.samples.values():
             if not sample.path.is_counted:
                 continue
             try:
-                predict_celltype_with_annotation(sample, marker_path=self.marker_path, abs_threshold=self.abs_threshold, force_rerun=self.force_rerun)
+                predict_celltype_with_annotation(
+                    sample, 
+                    marker_path=self.marker_path, 
+                    abs_threshold=self.abs_threshold, 
+                    force_rerun=self.force_rerun
+                )
             except Exception as e:
                 print(f"Failed {sample.schema.key}: {e}")
         return project
+    
+    def _run_reference_mode(self, project: "Project"):
+        """Run scPred reference-based prediction"""
+        console.print(f"[cyan]Running reference-based scPred prediction...[/cyan]")
+        
+        # Check if reference model exists
+        if not self.reference_manager.reference_exists(self.model):
+            console.print(f"[red]Error: Reference model not found for {self.model.get_cache_key()}[/red]")
+            console.print(f"[cyan]Build reference first using: celline run build_reference --species '{self.species}' --suffix {self.suffix or 'default'}[/cyan]")
+            return project
+        
+        # Get compatible samples for this reference
+        compatible_samples = self._get_compatible_samples_for_reference()
+        
+        if not compatible_samples:
+            console.print(f"[yellow]No compatible samples found for species '{self.species}'[/yellow]")
+            return project
+        
+        console.print(f"[green]Found {len(compatible_samples)} compatible samples[/green]")
+        
+        # Run scPred prediction for compatible samples
+        successful_predictions = 0
+        for sample_info in compatible_samples:
+            try:
+                if self.force_rerun or not self._has_scpred_results(sample_info):
+                    if self._run_scpred_prediction(sample_info):
+                        self._generate_scpred_plots(sample_info)
+                        successful_predictions += 1
+                else:
+                    console.print(f"[dim]Skipping {sample_info.schema.key} (results exist)[/dim]")
+                    successful_predictions += 1
+            except Exception as e:
+                console.print(f"[red]Failed {sample_info.schema.key}: {e}[/red]")
+        
+        console.print(f"[green]Successfully processed {successful_predictions}/{len(compatible_samples)} samples[/green]")
+        return project
+    
+    def _get_compatible_samples_for_reference(self):
+        """Get samples compatible with the current reference model"""
+        compatible_samples = []
+        
+        for sample in SampleResolver.samples.values():
+            if not sample.path.is_counted:
+                continue
+                
+            # Check species compatibility
+            sample_species = getattr(sample.schema, 'species', 'Unknown')
+            if sample_species.replace(" ", "_") == self.species.replace(" ", "_"):
+                compatible_samples.append(sample)
+        
+        return compatible_samples
+    
+    def _has_scpred_results(self, sample_info) -> bool:
+        """Check if scPred results already exist for sample"""
+        output_file = PathLib(sample_info.path.data_sample) / "celltype_predicted.tsv"
+        seurat_file = PathLib(sample_info.path.data_sample) / "seurat.rds"
+        
+        return output_file.exists() and seurat_file.exists()
+    
+    def _run_scpred_prediction(self, sample_info) -> bool:
+        """Run scPred prediction for a single sample using R script"""
+        try:
+            sample_id = sample_info.schema.key
+            project_id = sample_info.schema.project_key
+            
+            console.print(f"[cyan]Running scPred prediction for {sample_id}...[/cyan]")
+            
+            # Get reference paths
+            ref_dir = self.reference_manager.get_reference_path(self.model)
+            reference_seurat = f"{ref_dir}/reference.h5seurat"
+            reference_pred = f"{ref_dir}/reference.pred"
+            
+            if not os.path.exists(reference_seurat) or not os.path.exists(reference_pred):
+                console.print(f"[red]Reference files not found in {ref_dir}[/red]")
+                return False
+            
+            # Prepare paths for R script
+            resources_path = str(PathLib(sample_info.path.resources_sample_counted).parent.parent.parent)
+            data_path = str(PathLib(sample_info.path.data_sample).parent.parent)
+            
+            # Create shell script from template
+            script_content = self._generate_scpred_script(
+                reference_seurat=reference_seurat,
+                reference_pred=reference_pred,
+                project_id=project_id,
+                sample_id=sample_id,
+                resources_path=resources_path,
+                data_path=data_path
+            )
+            
+            # Write and execute script
+            script_path = PathLib(sample_info.path.data_sample) / "run_scpred.sh"
+            with open(script_path, 'w') as f:
+                f.write(script_content)
+            
+            os.chmod(script_path, 0o755)
+            
+            # Execute the script
+            ThreadObservable.call_shell([str(script_path)]).watch()
+            
+            # Check if results were created
+            return self._has_scpred_results(sample_info)
+            
+        except Exception as e:
+            console.print(f"[red]scPred prediction failed for {sample_info.schema.key}: {e}[/red]")
+            return False
+    
+    def _generate_scpred_script(self, reference_seurat: str, reference_pred: str, 
+                              project_id: str, sample_id: str, resources_path: str, 
+                              data_path: str) -> str:
+        """Generate shell script for scPred prediction"""
+        return f"""#!/bin/bash
+# scPred Prediction Script for {sample_id}
+set -e
+
+cd {Config.EXEC_ROOT}
+
+# Run scPred prediction using existing R script
+Rscript {Setting.r_path}script/run_scpred.R \\
+    {reference_seurat} \\
+    {reference_pred} \\
+    {project_id} \\
+    {sample_id} \\
+    {resources_path} \\
+    {data_path}
+
+echo "scPred prediction completed for {sample_id}"
+"""
+    
+    def _generate_scpred_plots(self, sample_info):
+        """Generate comprehensive plots for scPred results"""
+        try:
+            sample_id = sample_info.schema.key
+            
+            # Check if Seurat object exists
+            seurat_file = PathLib(sample_info.path.data_sample) / "seurat.rds"
+            if not seurat_file.exists():
+                console.print(f"[yellow]No Seurat object found for plotting: {sample_id}[/yellow]")
+                return
+            
+            # Setup figure directories
+            figures_dir = PathLib(sample_info.path.data_sample) / "figures"
+            celltype_dir = figures_dir / "celltype"
+            scpred_dir = celltype_dir / "scpred"
+            
+            for dir_path in [figures_dir, celltype_dir, scpred_dir]:
+                dir_path.mkdir(parents=True, exist_ok=True)
+            
+            # Generate R plotting script
+            plot_script_content = self._generate_scpred_plot_script(
+                seurat_file=str(seurat_file),
+                sample_id=sample_id,
+                output_dir=str(scpred_dir)
+            )
+            
+            # Write and execute plotting script
+            plot_script_path = PathLib(sample_info.path.data_sample) / "plot_scpred.R"
+            with open(plot_script_path, 'w') as f:
+                f.write(plot_script_content)
+            
+            # Execute plotting script
+            cmd = f"cd {Config.EXEC_ROOT} && Rscript {plot_script_path}"
+            ThreadObservable.call_shell([cmd]).watch()
+            
+            console.print(f"[green]Generated scPred plots for {sample_id}[/green]")
+            
+        except Exception as e:
+            console.print(f"[yellow]Plot generation failed for {sample_info.schema.key}: {e}[/yellow]")
+    
+    def _generate_scpred_plot_script(self, seurat_file: str, sample_id: str, output_dir: str) -> str:
+        """Generate R script for scPred plotting"""
+        return f"""# scPred Plotting Script for {sample_id}
+pacman::p_load(Seurat, scPred, tidyverse, ggplot2)
+
+# Load Seurat object with scPred results
+seurat_obj <- readRDS("{seurat_file}")
+
+# Set output directory
+output_dir <- "{output_dir}"
+
+# Plot 1: scPred UMAP with predictions
+p1 <- DimPlot(seurat_obj, reduction = "scpred", group.by = "scpred_prediction", 
+              label = TRUE, label.size = 3) +
+      ggtitle("scPred Cell Type Predictions") +
+      theme_minimal()
+
+ggsave(file.path(output_dir, "{sample_id}_scpred_predictions.png"), 
+       p1, width = 12, height = 8, dpi = 300)
+
+# Plot 2: scPred confidence scores
+if ("scpred_max" %in% colnames(seurat_obj@meta.data)) {{
+    p2 <- FeaturePlot(seurat_obj, reduction = "scpred", features = "scpred_max") +
+          ggtitle("scPred Confidence Scores") +
+          theme_minimal()
+    
+    ggsave(file.path(output_dir, "{sample_id}_scpred_confidence.png"), 
+           p2, width = 12, height = 8, dpi = 300)
+}}
+
+# Plot 3: Cell type composition
+pred_counts <- table(seurat_obj@meta.data$scpred_prediction)
+pred_df <- data.frame(
+    CellType = names(pred_counts),
+    Count = as.numeric(pred_counts)
+)
+
+p3 <- ggplot(pred_df, aes(x = reorder(CellType, Count), y = Count, fill = CellType)) +
+      geom_bar(stat = "identity") +
+      coord_flip() +
+      labs(title = "Cell Type Composition (scPred)", 
+           x = "Cell Type", y = "Number of Cells") +
+      theme_minimal() +
+      theme(legend.position = "none")
+
+ggsave(file.path(output_dir, "{sample_id}_scpred_composition.png"), 
+       p3, width = 10, height = 6, dpi = 300)
+
+# Plot 4: Comparison with original UMAP if available
+if ("umap" %in% names(seurat_obj@reductions)) {{
+    p4 <- DimPlot(seurat_obj, reduction = "umap", group.by = "scpred_prediction", 
+                  label = TRUE, label.size = 3) +
+          ggtitle("scPred Predictions on Original UMAP") +
+          theme_minimal()
+    
+    ggsave(file.path(output_dir, "{sample_id}_original_umap_predictions.png"), 
+           p4, width = 12, height = 8, dpi = 300)
+}}
+
+cat("scPred plots generated successfully for {sample_id}\\n")
+"""
 
     def add_cli_args(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--marker-path", type=str, help="Path to marker gene file (CSV/TSV) for cell type annotation")
-        parser.add_argument("--abs-threshold", type=float, default=0.08, help="Absolute threshold for annotation confidence (default: 0.08)")
+        parser.add_argument("--mode", type=str, choices=["canonical", "reference"], default="canonical", 
+                          help="Prediction mode: 'canonical' (marker-based, default) or 'reference' (scPred-based)")
+        parser.add_argument("--marker-path", type=str, help="Path to marker gene file (CSV/TSV) for canonical mode")
+        parser.add_argument("--abs-threshold", type=float, default=0.08, help="Absolute threshold for canonical mode (default: 0.08)")
+        parser.add_argument("--species", type=str, default="Homo sapiens", help="Species for reference mode (default: 'Homo sapiens')")
+        parser.add_argument("--suffix", type=str, help="Reference suffix for reference mode (optional)")
         parser.add_argument("--force-rerun", action="store_true", help="Force rerun even if output exists")
 
     def cli(self, project, args: argparse.Namespace | None = None):
+        # Default values
+        mode = "canonical"
         marker_path = None
         abs_threshold = 0.08
+        species = "Homo sapiens"
+        suffix = None
         force_rerun = False
 
         if args:
+            if hasattr(args, "mode"):
+                mode = args.mode
             if hasattr(args, "marker_path"):
                 marker_path = args.marker_path
             if hasattr(args, "abs_threshold"):
                 abs_threshold = args.abs_threshold
+            if hasattr(args, "species"):
+                species = args.species
+            if hasattr(args, "suffix"):
+                suffix = args.suffix
             if hasattr(args, "force_rerun"):
                 force_rerun = args.force_rerun
 
-        console.print("[cyan]Starting cell type prediction...[/cyan]")
-        if marker_path:
-            console.print(f"Using marker file: {marker_path}")
-        else:
-            console.print("No marker file provided - using clustering only")
-        console.print(f"Annotation threshold: {abs_threshold}")
+        console.print(f"[cyan]Starting cell type prediction in {mode} mode...[/cyan]")
+        
+        if mode == "canonical":
+            if marker_path:
+                console.print(f"Using marker file: {marker_path}")
+            else:
+                console.print("No marker file provided - using clustering only")
+            console.print(f"Annotation threshold: {abs_threshold}")
+        elif mode == "reference":
+            console.print(f"Using reference model for species: {species}")
+            if suffix:
+                console.print(f"Reference suffix: {suffix}")
 
-        predict_instance = PredictCelltype(marker_path=marker_path, abs_threshold=abs_threshold, force_rerun=force_rerun)
+        predict_instance = PredictCelltype(
+            mode=mode,
+            marker_path=marker_path, 
+            abs_threshold=abs_threshold, 
+            species=species,
+            suffix=suffix,
+            force_rerun=force_rerun
+        )
         return predict_instance.call(project)
 
     def get_description(self) -> str:
-        return """Cell type prediction with marker-based annotation and comprehensive visualization.
+        return """Dual-mode cell type prediction with comprehensive visualization.
 
-This function performs complete single-cell analysis:
-- Load h5 + cell_info.tsv
-- QC filtering and preprocessing
-- HVG → normalize → log1p → scale → PCA → neighbors → UMAP → Leiden
-- Marker-based cell type annotation (if marker file provided)
-- Generate comprehensive plots:
-  * Leiden cluster plots
-  * Cell type UMAP plots
-  * Individual cell type plots
-  * Marker score plots (per-celltype scaled)
+Modes:
+1. Canonical (default): Marker-based weighted scoring
+   - Load h5 + cell_info.tsv
+   - QC filtering and preprocessing  
+   - HVG → normalize → log1p → scale → PCA → neighbors → UMAP → Leiden
+   - Marker-based cell type annotation (if marker file provided)
+   - Generate comprehensive plots
+
+2. Reference: scPred reference-based prediction
+   - Use pre-trained scPred reference models
+   - Project query data onto reference feature space
+   - Predict cell types using trained classifiers
+   - Generate reference-based visualizations
 
 Output structure: data/{sample}/figures/celltype/{umap,scores}/"""
 
     def get_usage_examples(self) -> list[str]:
         return [
+            # Canonical mode examples
             "celline run predict_celltype",
-            "celline run predict_celltype --force-rerun",
-            "celline run predict_celltype --marker-path markers.csv",
+            "celline run predict_celltype --mode canonical --marker-path markers.csv",
             "celline run predict_celltype --marker-path markers.tsv --abs-threshold 0.1",
+            
+            # Reference mode examples  
+            "celline run predict_celltype --mode reference --species 'Homo sapiens'",
+            "celline run predict_celltype --mode reference --species 'Mus musculus' --suffix brain",
+            "celline run predict_celltype --mode reference --force-rerun",
         ]

@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import List, Optional
 
-from celline.cli.commands import cmd_list, cmd_help, cmd_run, cmd_info, cmd_init, cmd_interactive, cmd_api, cmd_config, cmd_export
+from celline.cli.commands import cmd_list, cmd_help, cmd_run, cmd_info, cmd_init, cmd_interactive, cmd_api, cmd_config, cmd_export, cmd_create
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -22,6 +22,11 @@ def create_parser() -> argparse.ArgumentParser:
     # Init command
     init_parser = subparsers.add_parser('init', help='Initialize a new celline project')
     init_parser.add_argument('project_name', nargs='?', help='Project name')
+    
+    # Create command
+    create_parser = subparsers.add_parser('create', help='Create a new custom function template')
+    create_parser.add_argument('function_name', help='Name of the function to create')
+    create_parser.add_argument('--project-dir', '-p', default='.', help='Project directory (default: current directory)')
     
     # List command
     list_parser = subparsers.add_parser('list', help='List all available functions')
@@ -74,11 +79,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         parser.print_help()
         return 0
     
+    # Quick exit for help/version commands (avoid heavy imports)
+    if len(argv) >= 1 and argv[0] in ['--help', '-h', '--version', '-v']:
+        args = parser.parse_args(argv)
+        return 0
+    
     args = parser.parse_args(argv)
     
     try:
         if args.command == 'init':
             cmd_init(args)
+        elif args.command == 'create':
+            cmd_create(args)
         elif args.command == 'list':
             cmd_list(args)
         elif args.command == 'help':

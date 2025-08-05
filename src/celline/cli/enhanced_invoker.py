@@ -7,7 +7,11 @@ from typing import Type, Optional
 from rich.console import Console
 
 from celline.functions._base import CellineFunction
-from celline.interfaces import Project
+# Lazy import to avoid heavy dependencies
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from celline.interfaces import Project
 
 console = Console()
 
@@ -64,7 +68,7 @@ class EnhancedFunctionInvoker:
         parser = self.create_function_parser()
         return parser.format_help()
     
-    def invoke(self, project: Project, cli_args: list[str] = None) -> Project:
+    def invoke(self, project: "Project", cli_args: list[str] = None) -> "Project":
         """
         Invoke the function using CLI interface.
         

@@ -1,9 +1,8 @@
 from __future__ import annotations
 import os
+import subprocess
 from typing import Any, Dict, Optional, Final
 import toml
-import subprocess
-import inquirer
 
 
 class Config:
@@ -42,10 +41,14 @@ class Setting:
     version: str
     wait_time: int
     r_path: str = ""
+    _r_path_initialized: bool = False  # Track if R path has been initialized
     # New execution settings
     system: str = "multithreading"  # "multithreading" or "PBS"
     nthread: int = 1
     pbs_server: str = ""
+    # Custom functions settings
+    custom_functions_dir: str = "functions"  # Directory for custom functions (relative to PROJ_ROOT)
+    enable_custom_functions: bool = True  # Enable/disable custom function discovery
 
     # @staticmethod
     # def validate():
@@ -62,6 +65,10 @@ class Setting:
                 "system": Setting.system,
                 "nthread": Setting.nthread,
                 "pbs_server": Setting.pbs_server,
+            },
+            "custom_functions": {
+                "directory": Setting.custom_functions_dir,
+                "enabled": Setting.enable_custom_functions,
             },
         }
 
@@ -96,6 +103,34 @@ class Setting:
     #     Setting.wait_time = 4
     #     Setting.flush()
     #     print("Completed.")
+
+    @staticmethod
+    def ensure_r_path():
+        """Ensure R path is initialized (lazy initialization)."""
+        if not Setting._r_path_initialized and not Setting.r_path:
+            try:
+                # Try common R installation paths first (faster)
+                common_paths = ["/usr/bin/R", "/usr/local/bin/R", "/opt/homebrew/bin/R"]
+                for path in common_paths:
+                    if os.path.exists(path) and os.access(path, os.X_OK):
+                        Setting.r_path = path
+                        Setting._r_path_initialized = True
+                        return
+                
+                # Fallback to system search only if needed
+                proc = subprocess.Popen(
+                    "which R",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    shell=True,
+                    timeout=2
+                )
+                result = proc.communicate()
+                Setting.r_path = result[0].decode("utf-8").strip() or "/usr/bin/R"
+            except (subprocess.TimeoutExpired, Exception):
+                Setting.r_path = "/usr/bin/R"  # Default fallback
+            finally:
+                Setting._r_path_initialized = True
 
     @staticmethod
     def flush():
