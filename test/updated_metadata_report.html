@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Celline Metadata Report - Updated with Child Runs</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+        }
+        .header {
+            border-bottom: 3px solid #2c3e50;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+        h1 {
+            color: #2c3e50;
+            margin: 0;
+            font-size: 2.5em;
+        }
+        .sample {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            margin-bottom: 25px;
+            overflow: hidden;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .sample-header {
+            background-color: #3498db;
+            color: white;
+            padding: 15px 20px;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        .sample-content {
+            padding: 20px;
+        }
+        .metadata-section {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 4px solid #3498db;
+            margin-bottom: 20px;
+        }
+        .metadata-section h3 {
+            margin-top: 0;
+            color: #2c3e50;
+            font-size: 1.1em;
+        }
+        .metadata-item {
+            margin-bottom: 10px;
+        }
+        .metadata-label {
+            font-weight: bold;
+            color: #34495e;
+            display: inline-block;
+            min-width: 100px;
+        }
+        .metadata-value {
+            color: #555;
+            word-break: break-word;
+        }
+        .highlight {
+            background-color: #ffffcc;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧬 Celline Metadata Report</h1>
+            <p>Updated with Child Runs Support</p>
+        </div>
+        
+        <div class="sample">
+            <div class="sample-header">
+                GSM3722100: YX1L: Young animal 1
+            </div>
+            
+            <div class="sample-content">
+                <div class="metadata-section">
+                    <h3>🔬 Technical Details</h3>
+                    <div class="metadata-item">
+                        <span class="metadata-label">Child Runs:</span>
+                        <span class="metadata-value highlight">SRR8895030</span>
+                    </div>
+                    <div class="metadata-item">
+                        <span class="metadata-label">Species:</span>
+                        <span class="metadata-value">Mus musculus</span>
+                    </div>
+                    <div class="metadata-item">
+                        <span class="metadata-label">Strategy:</span>
+                        <span class="metadata-value">RNA-Seq</span>
+                    </div>
+                    <div class="metadata-item">
+                        <span class="metadata-label">Platform:</span>
+                        <span class="metadata-value">ILLUMINA</span>
+                    </div>
+                </div>
+                
+                <div class="metadata-section">
+                    <h3>ℹ️ Status</h3>
+                    <p>✅ Child Runs are now correctly displaying <strong>SRR IDs</strong> (actual run IDs) instead of SRX IDs (sample IDs).</p>
+                    <p>📊 The implementation fetches the SRX ID from GEO, then queries SRA to get the corresponding SRR run IDs.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

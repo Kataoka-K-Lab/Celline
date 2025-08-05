@@ -7,3 +7,12 @@ wait_time = 4
 
 [R]
 r_path = "/usr/bin/R"
+
+[execution]
+system = "multithreading"
+nthread = 1
+pbs_server = ""
+
+[custom_functions]
+directory = "functions"
+enabled = true
