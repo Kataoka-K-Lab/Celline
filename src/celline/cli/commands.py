@@ -1,6 +1,4 @@
-"""
-CLI commands for celline.
-"""
+"""CLI commands for celline."""
 
 import argparse
 import sys
@@ -11,6 +9,7 @@ from rich.table import Table
 from rich.text import Text
 
 from celline.cli.registry import get_registry
+
 # Lazy imports to avoid heavy dependency loading
 
 
@@ -19,16 +18,17 @@ console = Console()
 
 def cmd_list(args: argparse.Namespace) -> None:
     """List all available CellineFunction implementations."""
-    
     # Initialize project root for custom function discovery
-    from celline.config import Config, Setting
     import os
+
     import toml
-    
+
+    from celline.config import Config, Setting
+
     # Set current directory as project root
     current_dir = os.getcwd()
     Config.PROJ_ROOT = current_dir
-    
+
     # Load settings if available for custom functions
     setting_file = f"{current_dir}/setting.toml"
     if os.path.isfile(setting_file):
@@ -41,7 +41,7 @@ def cmd_list(args: argparse.Namespace) -> None:
         # Set defaults
         Setting.custom_functions_dir = "functions"
         Setting.enable_custom_functions = True
-    
+
     registry = get_registry()
     functions = registry.list_functions()
 
@@ -67,7 +67,7 @@ def cmd_list(args: argparse.Namespace) -> None:
                 func.name,
                 func.class_name,
                 func.description,
-                func.module_path.replace('celline.functions.', '')
+                func.module_path.replace("celline.functions.", ""),
             )
 
         console.print(table)
@@ -84,12 +84,12 @@ def cmd_list(args: argparse.Namespace) -> None:
 
         # Sort custom functions by name
         for func in sorted(custom_functions, key=lambda f: f.name):
-            module_display = func.module_path.replace('custom.', '') if func.module_path.startswith('custom.') else func.module_path
+            module_display = func.module_path.replace("custom.", "") if func.module_path.startswith("custom.") else func.module_path
             custom_table.add_row(
                 func.name,
                 func.class_name,
                 func.description,
-                module_display
+                module_display,
             )
 
         console.print(custom_table)
@@ -97,7 +97,7 @@ def cmd_list(args: argparse.Namespace) -> None:
 
     # Print total
     console.print(f"\n[bold]Total: {len(functions)} functions[/bold]")
-    
+
     # Show instructions for custom functions
     if not custom_functions:
         console.print()
@@ -119,6 +119,7 @@ def cmd_help(args: argparse.Namespace) -> None:
 
         # Use enhanced invoker to get detailed help
         from celline.cli.enhanced_invoker import EnhancedFunctionInvoker
+
         invoker = EnhancedFunctionInvoker(func_info.class_ref)
         help_text = invoker.get_help_text()
         console.print(help_text)
@@ -154,17 +155,19 @@ def cmd_run(args: argparse.Namespace) -> None:
         console.print("[red]Error: Function name is required.[/red]")
         console.print("Usage: celline run <function_name>")
         return
-    
+
     # Initialize project root for custom function discovery
-    from celline.config import Config, Setting
     import os
+
     import toml
-    
+
+    from celline.config import Config, Setting
+
     # Set current directory as project root if not already set
-    if not hasattr(Config, 'PROJ_ROOT') or not Config.PROJ_ROOT:
+    if not hasattr(Config, "PROJ_ROOT") or not Config.PROJ_ROOT:
         current_dir = os.getcwd()
         Config.PROJ_ROOT = current_dir
-        
+
         # Load settings if available for custom functions
         setting_file = f"{current_dir}/setting.toml"
         if os.path.isfile(setting_file):
@@ -177,7 +180,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             # Set defaults
             Setting.custom_functions_dir = "functions"
             Setting.enable_custom_functions = True
-    
+
     registry = get_registry()
     func_info = registry.get_function(args.function_name)
 
@@ -188,22 +191,24 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     try:
         # Create a project instance
-        project_dir = getattr(args, 'project_dir', '.')
-        project_name = getattr(args, 'project_name', 'default')
+        project_dir = getattr(args, "project_dir", ".")
+        project_name = getattr(args, "project_name", "default")
 
         console.print(f"[dim]Project: {project_name} (dir: {project_dir})[/dim]")
-        
+
         # Lazy import Project
         from celline.interfaces import Project
+
         project = Project(project_dir, project_name)
 
         # Use enhanced invoker to handle function execution
         from celline.cli.enhanced_invoker import EnhancedFunctionInvoker
+
         invoker = EnhancedFunctionInvoker(func_info.class_ref)
 
         # Extract function-specific arguments (everything after the function name)
         # This includes both positional args and options like --nthread
-        function_args = getattr(args, 'function_args', [])
+        function_args = getattr(args, "function_args", [])
 
         invoker.invoke(project, function_args)
 
@@ -212,21 +217,24 @@ def cmd_run(args: argparse.Namespace) -> None:
     except Exception as e:
         console.print(f"[red]Error running function '{func_info.name}': {e}[/red]")
         import traceback
+
         if console.is_terminal:
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
 def cmd_init(args: argparse.Namespace) -> None:
     """Initialize celline system configuration (same as 'celline run init')."""
-    from celline.functions.initialize import Initialize
     import os
+
+    from celline.functions.initialize import Initialize
 
     try:
         # Create a Project instance to properly initialize Config.PROJ_ROOT
         current_dir = os.getcwd()
-        
+
         # Lazy import Project
         from celline.interfaces import Project
+
         project = Project(current_dir)
 
         initialize_func = Initialize()
@@ -251,7 +259,7 @@ def cmd_info(args: argparse.Namespace) -> None:
     # Group by module
     modules = {}
     for func in functions:
-        module = func.module_path.replace('celline.functions.', '')
+        module = func.module_path.replace("celline.functions.", "")
         if module not in modules:
             modules[module] = []
         modules[module].append(func)
@@ -276,6 +284,7 @@ def cmd_interactive(args: argparse.Namespace) -> None:
     except Exception as e:
         console.print(f"[red]Error starting interactive mode: {e}[/red]")
         import traceback
+
         if console.is_terminal:
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
@@ -295,22 +304,26 @@ def cmd_api(args: argparse.Namespace) -> None:
         sys.path.insert(0, str(project_root / "src"))
 
         from celline.cli.start_simple_api import main
+
         main()
     except KeyboardInterrupt:
         console.print("\n[yellow]API server stopped[/yellow]")
     except Exception as e:
         console.print(f"[red]Error starting API server: {e}[/red]")
         import traceback
+
         if console.is_terminal:
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
 def cmd_config(args: argparse.Namespace) -> None:
     """Configure celline settings."""
-    from celline.config import Config, Setting
     import os
-    import toml
+
     import inquirer
+    import toml
+
+    from celline.config import Config, Setting
 
     # Set current directory as project directory if no setting.toml exists
     current_dir = os.getcwd()
@@ -390,8 +403,8 @@ def cmd_config(args: argparse.Namespace) -> None:
                 inquirer.Confirm(
                     name="modify",
                     message="Do you want to modify the execution settings?",
-                    default=True
-                )
+                    default=True,
+                ),
             ]
             modify_result = inquirer.prompt(modify_question, raise_keyboard_interrupt=True)
 
@@ -406,10 +419,10 @@ def cmd_config(args: argparse.Namespace) -> None:
                     message="Select execution system",
                     choices=[
                         ("Multithreading (recommended for local execution)", "multithreading"),
-                        ("PBS (for cluster execution)", "PBS")
+                        ("PBS (for cluster execution)", "PBS"),
                     ],
-                    default=Setting.system
-                )
+                    default=Setting.system,
+                ),
             ]
             system_result = inquirer.prompt(system_question, raise_keyboard_interrupt=True)
 
@@ -425,8 +438,8 @@ def cmd_config(args: argparse.Namespace) -> None:
                     name="nthread",
                     message="Enter number of threads (1-64)",
                     default=str(Setting.nthread),
-                    validate=lambda _, x: x.isdigit() and 1 <= int(x) <= 64
-                )
+                    validate=lambda _, x: x.isdigit() and 1 <= int(x) <= 64,
+                ),
             ]
             thread_result = inquirer.prompt(thread_question, raise_keyboard_interrupt=True)
 
@@ -443,8 +456,8 @@ def cmd_config(args: argparse.Namespace) -> None:
                     inquirer.Text(
                         name="pbs_server",
                         message="Enter PBS server name",
-                        default=Setting.pbs_server if Setting.pbs_server else "your-cluster-name"
-                    )
+                        default=Setting.pbs_server if Setting.pbs_server else "your-cluster-name",
+                    ),
                 ]
                 pbs_result = inquirer.prompt(pbs_question, raise_keyboard_interrupt=True)
 
@@ -479,13 +492,13 @@ def cmd_config(args: argparse.Namespace) -> None:
 
 def cmd_export(args: argparse.Namespace) -> None:
     """Handle export commands."""
-    if not hasattr(args, 'export_command') or args.export_command is None:
+    if not hasattr(args, "export_command") or args.export_command is None:
         console.print("[red]Error: Export subcommand is required.[/red]")
         console.print("Usage: celline export <subcommand>")
         console.print("Available subcommands: metareport")
         return
 
-    if args.export_command == 'metareport':
+    if args.export_command == "metareport":
         cmd_export_metareport(args)
     else:
         console.print(f"[red]Unknown export command: {args.export_command}[/red]")
@@ -493,26 +506,28 @@ def cmd_export(args: argparse.Namespace) -> None:
 
 def cmd_export_metareport(args: argparse.Namespace) -> None:
     """Generate metadata report from samples.toml."""
-    from celline.functions.export_metareport import ExportMetaReport
     import os
+
+    from celline.functions.export_metareport import ExportMetaReport
 
     try:
         # Create a Project instance
-        project_dir = getattr(args, 'project_dir', '.')
-        
+        project_dir = getattr(args, "project_dir", ".")
+
         # Lazy import Project
         from celline.interfaces import Project
+
         project = Project(project_dir)
 
         # Set output file and AI flag
-        output_file = getattr(args, 'output', 'metadata_report.html')
-        use_ai = getattr(args, 'ai', False)
+        output_file = getattr(args, "output", "metadata_report.html")
+        use_ai = getattr(args, "ai", False)
 
-        console.print(f"[dim]Generating metadata report...[/dim]")
+        console.print("[dim]Generating metadata report...[/dim]")
         console.print(f"[dim]Project directory: {project_dir}[/dim]")
         console.print(f"[dim]Output file: {output_file}[/dim]")
         if use_ai:
-            console.print(f"[dim]AI analysis: enabled[/dim]")
+            console.print("[dim]AI analysis: enabled[/dim]")
 
         # Create and run the export function
         export_func = ExportMetaReport(output_file=output_file, use_ai=use_ai)
@@ -525,83 +540,87 @@ def cmd_export_metareport(args: argparse.Namespace) -> None:
     except Exception as e:
         console.print(f"[red]Error generating report: {e}[/red]")
         import traceback
+
         if console.is_terminal:
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
 def cmd_create(args: argparse.Namespace) -> None:
     """Create a new custom function template."""
-    from celline.config import Config, Setting
-    from pathlib import Path
     import os
     import re
-    
-    if not hasattr(args, 'function_name') or not args.function_name:
+    from pathlib import Path
+
+    from celline.config import Config, Setting
+
+    if not hasattr(args, "function_name") or not args.function_name:
         console.print("[red]Error: Function name is required.[/red]")
         console.print("Usage: celline create <function_name>")
         return
-    
+
     function_name = args.function_name
-    
+
     # Validate function name
-    if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', function_name):
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", function_name):
         console.print("[red]Error: Function name must be a valid Python identifier.[/red]")
         console.print("Example: my_function, analyze_data, process_samples")
         return
-    
+
     try:
         # Get project directory and settings
-        project_dir = getattr(args, 'project_dir', '.')
-        
+        project_dir = getattr(args, "project_dir", ".")
+
         # Initialize Config.PROJ_ROOT
         Config.PROJ_ROOT = os.path.abspath(project_dir)
-        
+
         # Load settings if available
         setting_file = f"{Config.PROJ_ROOT}/setting.toml"
         if os.path.isfile(setting_file):
             import toml
+
             with open(setting_file, encoding="utf-8") as f:
                 setting_data = toml.load(f)
                 custom_config = setting_data.get("custom_functions", {})
                 Setting.custom_functions_dir = custom_config.get("directory", "functions")
                 Setting.enable_custom_functions = custom_config.get("enabled", True)
-        
+
         # Create custom functions directory
         custom_functions_path = Path(Config.PROJ_ROOT) / Setting.custom_functions_dir
         custom_functions_path.mkdir(parents=True, exist_ok=True)
-        
+
         # Create function file
         function_file = custom_functions_path / f"{function_name}.py"
-        
+
         if function_file.exists():
             console.print(f"[yellow]Warning: Function file already exists: {function_file}[/yellow]")
-            
+
             import inquirer
+
             overwrite_question = [
                 inquirer.Confirm(
                     name="overwrite",
                     message="Do you want to overwrite the existing file?",
-                    default=False
-                )
+                    default=False,
+                ),
             ]
             overwrite_result = inquirer.prompt(overwrite_question, raise_keyboard_interrupt=True)
-            
+
             if overwrite_result is None or not overwrite_result["overwrite"]:
                 console.print("[yellow]Function creation cancelled.[/yellow]")
                 return
-        
+
         # Generate function template
         template_content = _generate_function_template(function_name)
-        
+
         # Write function file
-        with open(function_file, 'w', encoding='utf-8') as f:
+        with open(function_file, "w", encoding="utf-8") as f:
             f.write(template_content)
-        
+
         console.print(f"[green]✅ Custom function created: {function_file}[/green]")
         console.print()
         console.print("[bold]Next steps:[/bold]")
         console.print(f"1. Edit {function_file} to implement your function")
-        console.print(f"2. Use 'celline list' to see your function in the list")
+        console.print("2. Use 'celline list' to see your function in the list")
         console.print(f"3. Run your function with 'celline run custom_{function_name}'")
         console.print()
         console.print("[dim]The function template includes:")
@@ -609,20 +628,21 @@ def cmd_create(args: argparse.Namespace) -> None:
         console.print("- CLI argument handling")
         console.print("- Documentation templates")
         console.print("- Usage examples[/dim]")
-        
+
     except KeyboardInterrupt:
         console.print("\n[yellow]Function creation cancelled by user[/yellow]")
     except Exception as e:
         console.print(f"[red]Error creating function: {e}[/red]")
         import traceback
+
         if console.is_terminal:
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
 def _generate_function_template(function_name: str) -> str:
     """Generate a template for a custom CellineFunction."""
-    class_name = ''.join(word.capitalize() for word in function_name.split('_'))
-    
+    class_name = "".join(word.capitalize() for word in function_name.split("_"))
+
     return f'''"""
 Custom Celline Function: {function_name}
 
@@ -646,53 +666,53 @@ console = Console()
 
 class {class_name}(CellineFunction):
     """Custom function: {function_name}
-    
+
     TODO: Add a description of what this function does.
-    
+
     Example usage:
     - celline run custom_{function_name}
     - celline run custom_{function_name} --example-arg value
     """
-    
+
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         # Initialize your parameters here
         # Example:
         # self.example_param = kwargs.get('example_param', 'default_value')
-    
+
     def register(self) -> str:
         """Register this function with a specific name."""
         return "custom_{function_name}"
-    
+
     def call(self, project: "Project"):
         """Main function implementation.
-        
+
         Args:
             project: The Celline project instance
-            
+
         Returns:
             project: The project instance (for chaining)
         """
         console.print(f"[cyan]Running custom function: {function_name}[/cyan]")
-        
+
         # TODO: Implement your function logic here
         # You can access:
         # - project.samples: Sample information
         # - project.config: Project configuration
         # - Any parameters from self.__init__
-        
+
         # Example implementation:
         console.print("Hello from your custom function!")
         console.print(f"Project directory: {{project.config.PROJ_ROOT}}")
-        
+
         # TODO: Add your data processing, analysis, or visualization code
-        
+
         console.print("[green]Custom function completed successfully![/green]")
         return project
-    
+
     def add_cli_args(self, parser: argparse.ArgumentParser) -> None:
         """Add command-line arguments for this function.
-        
+
         Args:
             parser: The ArgumentParser to add arguments to
         """
@@ -703,14 +723,14 @@ class {class_name}(CellineFunction):
         # parser.add_argument("--threads", type=int, default=1, help="Number of threads")
         # parser.add_argument("--force", action="store_true", help="Force overwrite existing files")
         pass
-    
+
     def cli(self, project: "Project", args: argparse.Namespace | None = None) -> "Project":
         """CLI entry point for this function.
-        
+
         Args:
             project: The Project instance
             args: Parsed CLI arguments
-            
+
         Returns:
             Project: The project instance (for chaining)
         """
@@ -720,12 +740,12 @@ class {class_name}(CellineFunction):
         #     self.input_file = args.input_file
         # if args and hasattr(args, 'threads'):
         #     self.threads = args.threads
-        
+
         console.print(f"[dim]Starting custom function: {function_name}[/dim]")
-        
+
         # Call the main implementation
         return self.call(project)
-    
+
     def get_description(self) -> str:
         """Get a description of this function for CLI help."""
         return """Custom function: {function_name}
@@ -739,10 +759,10 @@ This function can be used to:
 
 Example workflow:
 1. TODO: Step 1
-2. TODO: Step 2  
+2. TODO: Step 2
 3. TODO: Step 3
 """
-    
+
     def get_usage_examples(self) -> list[str]:
         """Get usage examples for CLI help."""
         return [
