@@ -3,3 +3,4 @@ obsolete/
 .env
 test/
 test*
+.env

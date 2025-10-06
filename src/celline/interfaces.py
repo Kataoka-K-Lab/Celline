@@ -51,8 +51,9 @@ class Project:
 
         self.EXEC_PATH = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
         self.PROJ_PATH = os.path.abspath(project_dir)
-        Config.EXEC_ROOT = self.EXEC_PATH
-        Config.PROJ_ROOT = self.PROJ_PATH
+
+        # Initialize Config instance (required for BaseModel)
+        self._config = Config(self.PROJ_PATH)
         
         # Only initialize settings if setting.toml doesn't exist
         setting_file = f"{self.PROJ_PATH}/setting.toml"

@@ -602,11 +602,15 @@ class Integrate(CellineFunction):
         logger.info("Setting up scVI model...")
         scvi.model.SCVI.setup_anndata(adata, batch_key=self.batch_key)
 
-        # Create and train model
+        # Create and train model with fixed seed for reproducibility
+        from celline.config import Config
         model = scvi.model.SCVI(adata)
-        logger.info(f"Training scVI model for {self.scvi_epochs} epochs...")
-        console.print(f"[dim]Training scVI model ({self.scvi_epochs} epochs)...[/dim]")
+        logger.info(f"Training scVI model for {self.scvi_epochs} epochs (seed={Config.DEFAULT_SEED})...")
+        console.print(f"[dim]Training scVI model ({self.scvi_epochs} epochs, seed={Config.DEFAULT_SEED})...[/dim]")
 
+        # Set seed for PyTorch (scVI uses PyTorch internally)
+        import torch
+        torch.manual_seed(Config.DEFAULT_SEED)
         model.train(max_epochs=self.scvi_epochs, early_stopping=self.scvi_early_stopping, accelerator="cpu")
 
         # Get latent representation
@@ -614,9 +618,9 @@ class Integrate(CellineFunction):
         adata.obsm["X_scvi"] = model.get_latent_representation()
 
         # Compute neighbors and UMAP (scVI latent representation doesn't need n_pcs)
-        sc.pp.neighbors(adata, use_rep="X_scvi")
-        sc.tl.umap(adata)
-        sc.tl.leiden(adata, resolution=1.0, key_added="leiden_scvi")
+        sc.pp.neighbors(adata, use_rep="X_scvi", random_state=Config.DEFAULT_SEED)
+        sc.tl.umap(adata, random_state=Config.DEFAULT_SEED)
+        sc.tl.leiden(adata, resolution=1.0, key_added="leiden_scvi", random_state=Config.DEFAULT_SEED)
 
         # Save scVI model
         model_save_dir = self.output_dir / self.outfile_name / "models"
@@ -651,26 +655,27 @@ class Integrate(CellineFunction):
         sc.pp.scale(adata, max_value=10)
 
         # PCA
-        logger.info(f"Computing PCA with {self.n_pcs} components...")
-        sc.tl.pca(adata, svd_solver="arpack", n_comps=self.n_pcs)
+        from celline.config import Config
+        logger.info(f"Computing PCA with {self.n_pcs} components (seed={Config.DEFAULT_SEED})...")
+        sc.tl.pca(adata, svd_solver="arpack", n_comps=self.n_pcs, random_state=Config.DEFAULT_SEED)
 
         # Prepare data for Harmony
         data_mat = adata.obsm["X_pca"].T  # Harmony expects genes x cells
         meta_data = adata.obs[self.harmony_vars_use].copy()
 
-        # Run Harmony
-        logger.info(f"Running Harmony with vars_use: {self.harmony_vars_use}")
-        console.print("[dim]Running Harmony correction...[/dim]")
+        # Run Harmony with fixed seed
+        logger.info(f"Running Harmony with vars_use: {self.harmony_vars_use} (seed={Config.DEFAULT_SEED})")
+        console.print(f"[dim]Running Harmony correction (seed={Config.DEFAULT_SEED})...[/dim]")
 
-        ho = hm.run_harmony(data_mat, meta_data, self.harmony_vars_use)
+        ho = hm.run_harmony(data_mat, meta_data, self.harmony_vars_use, random_state=Config.DEFAULT_SEED)
 
         # Store corrected embedding
         adata.obsm["X_harmony"] = ho.Z_corr.T
 
         # Compute neighbors and UMAP using corrected embedding
-        sc.pp.neighbors(adata, use_rep="X_harmony", n_pcs=self.n_pcs)
-        sc.tl.umap(adata)
-        sc.tl.leiden(adata, resolution=1.0, key_added="leiden_harmony")
+        sc.pp.neighbors(adata, use_rep="X_harmony", n_pcs=self.n_pcs, random_state=Config.DEFAULT_SEED)
+        sc.tl.umap(adata, random_state=Config.DEFAULT_SEED)
+        sc.tl.leiden(adata, resolution=1.0, key_added="leiden_harmony", random_state=Config.DEFAULT_SEED)
 
         logger.info("Harmony integration completed")
         console.print("[green]✓ Harmony integration completed[/green]")

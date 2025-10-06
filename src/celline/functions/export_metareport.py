@@ -253,8 +253,12 @@ class ExportMetaReport(CellineFunction):
         samples_path = f"{Config.PROJ_ROOT}/samples.toml"
         try:
             with open(samples_path, 'r', encoding='utf-8') as f:
-                samples = toml.load(f)
-            return samples.get(sample_id, sample_id)
+                all_data = toml.load(f)
+                samples = all_data.get("samples", {})
+            sample_data = samples.get(sample_id, {})
+            if isinstance(sample_data, dict):
+                return sample_data.get("title", sample_id)
+            return sample_id
         except Exception:
             return sample_id
 

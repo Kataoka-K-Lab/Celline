@@ -71,11 +71,12 @@ class ArrayExpressHandler(BaseHandler[AE_Study, AE_Sample, AE_Run]):
     
     def _is_sample_name(self, accession_id: str) -> bool:
         """Check if ID could be a sample name (fallback)"""
-        # Accept various sample naming conventions but be more restrictive
-        return (len(accession_id) > 0 and 
+        # Only accept sample names that explicitly contain 'sample' keyword
+        # This prevents false positives with arbitrary IDs containing underscores/hyphens
+        return (len(accession_id) > 0 and
                 not self._is_ena_run(accession_id) and
-                not accession_id.startswith(("GSE", "GSM", "SRP", "INVALID")) and
-                ("sample" in accession_id.lower() or "_" in accession_id or "-" in accession_id))
+                not accession_id.startswith(("GSE", "GSM", "SRP", "SRX", "INVALID", "CUSTOM")) and
+                "sample" in accession_id.lower())
     
     def _is_ena_run(self, accession_id: str) -> bool:
         """Check if ID is an ENA run accession"""

@@ -2,9 +2,9 @@ import os
 from typing import TYPE_CHECKING, Final, List, Optional
 
 from rich.progress import track
-import toml
 
 from celline.DB.dev.handler import HandleResolver
+from celline.DB.dev.excel_handler import ExcelMetadataHandler
 from celline.config import Config
 from celline.functions._base import CellineFunction
 
@@ -17,11 +17,16 @@ class SyncDB(CellineFunction):
         self.update_target = force_update_target
 
     def call(self, project: "Project"):
-        fpath: Final[str] = f"{Config.PROJ_ROOT}/samples.toml"
-        if not os.path.isfile(fpath):
-            raise FileNotFoundError("sample.toml file was not found.")
-        with open(fpath, encoding="utf-8", mode="r") as f:
-            all_samples = list(toml.load(f).keys())
+        if Config.current in Config.runnings:
+            excel_path = f"{Config.runnings[Config.current].PROJ_ROOT}/metadata.xlsx"
+        else:
+            raise RuntimeError("Config not initialized")
+
+        if not os.path.isfile(excel_path):
+            raise FileNotFoundError("metadata.xlsx file was not found.")
+
+        excel_handler = ExcelMetadataHandler(excel_path)
+        all_samples = list(excel_handler.get_all_keys("samples"))
         for sample in track(all_samples, description="Fetching..."):
             force_search = False
             if self.update_target is not None and sample in self.update_target:

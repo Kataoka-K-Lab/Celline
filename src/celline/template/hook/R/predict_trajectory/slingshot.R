@@ -259,13 +259,12 @@ apply_exclude_filters <- function(seurat_obj, exclude_json = NULL) {
 
 # ─────────────────── 1. Input & required‑gene validation ───────────────────
 read_inputs <- function(h5ad_path,
-                        progenitor_markers,
-                        differentiation_markers,
                         marker_file) {
   # Read AnnData → Seurat
   seurat_obj <- read_h5ad(h5ad_path)
 
-  # Build required gene list (A–D) with format conversion
+  # Build required gene list: only cell cycle + canonical markers
+  # Tissue-specific markers (progenitor/differentiation) are no longer used
   data("cc.genes.updated.2019", package = "Seurat")
   cell_cycle_genes <- unlist(cc.genes.updated.2019)
 
@@ -276,18 +275,14 @@ read_inputs <- function(h5ad_path,
   available_seurat_genes <- rownames(seurat_obj)
 
   cc_found <- convert_gene_names(cell_cycle_genes, available_seurat_genes)
-  prog_found <- convert_gene_names(progenitor_markers, available_seurat_genes)
-  diff_found <- convert_gene_names(differentiation_markers, available_seurat_genes)
   mst_found <- convert_gene_names(mst_markers, available_seurat_genes)
 
-  available_genes <- union(cc_found, union(prog_found, union(diff_found, mst_found)))
-  total_requested <- length(cell_cycle_genes) + length(progenitor_markers) +
-                    length(differentiation_markers) + length(mst_markers)
+  # Only use cell cycle + canonical markers (removed tissue-specific markers)
+  available_genes <- union(cc_found, mst_found)
+  total_requested <- length(cell_cycle_genes) + length(mst_markers)
 
   message("[INFO] Gene matching summary:")
   message("  Cell cycle: ", length(cc_found), "/", length(cell_cycle_genes))
-  message("  Progenitor: ", length(prog_found), "/", length(progenitor_markers))
-  message("  Differentiation: ", length(diff_found), "/", length(differentiation_markers))
   message("  MST markers: ", length(mst_found), "/", length(mst_markers))
   message("  Total available: ", length(available_genes), "/", total_requested)
 
@@ -362,8 +357,9 @@ preprocess_seurat_latent <- function(seurat,
     seurat <- seurat |>
       # Find neighbors
       {\(so) {
-        message("[INFO] Building neighbor graph...")
+        message("[INFO] Building neighbor graph (seed=42)...")
         message("[DEBUG] Using latent dimensions: ", paste(range(dims_to_use), collapse = "-"))
+        set.seed(42)
         result <- Seurat::FindNeighbors(so, reduction = latent_reduction_name,
                                       dims = dims_to_use,
                                       verbose = FALSE)
@@ -372,7 +368,8 @@ preprocess_seurat_latent <- function(seurat,
       }}() |>
       # Find clusters
       {\(so) {
-        message("[INFO] Finding clusters with resolution ", resolution, "...")
+        message("[INFO] Finding clusters with resolution ", resolution, " (seed=42)...")
+        set.seed(42)
         result <- Seurat::FindClusters(so, resolution = resolution,
                                      verbose = FALSE)
         n_clusters <- length(levels(result$seurat_clusters))
@@ -386,10 +383,12 @@ preprocess_seurat_latent <- function(seurat,
       }}() |>
       # UMAP
       {\(so) {
-        message("[INFO] Computing UMAP...")
+        message("[INFO] Computing UMAP (seed=42)...")
+        set.seed(42)
         result <- Seurat::RunUMAP(so, reduction = latent_reduction_name,
                                 dims = dims_to_use,
-                                verbose = FALSE)
+                                verbose = FALSE,
+                                seed.use = 42)
         message("[DEBUG] UMAP completed")
         result
       }}()
@@ -445,75 +444,40 @@ score_cell_cycle <- function(seurat) {
 }
 
 # ───────────────────── 4. Root‑cluster selection ───────────────────────────
-select_root_cluster <- function(seurat,
-                                progenitor_markers,
-                                differentiation_markers) {
+select_root_cluster <- function(seurat) {
 
-  message("[INFO] Selecting root cluster based on marker expression...")
+  message("[INFO] Selecting root cluster based on cell cycle scoring...")
+  message("[WARNING] Automatic root cluster selection is deprecated. Please use --root_cluster to manually specify the root cluster.")
 
-  # Validate marker genes using format conversion
-  available_seurat_genes <- rownames(seurat)
-  prog <- convert_gene_names(progenitor_markers, available_seurat_genes)
-  diff <- convert_gene_names(differentiation_markers, available_seurat_genes)
+  # Only use cell cycle scoring (no tissue-specific markers)
+  # Cell cycle scores should already be present from earlier scoring step
 
-  message("[DEBUG] Progenitor markers found: ", length(prog), "/", length(progenitor_markers),
-          " (", paste(head(prog, 3), collapse = ", "), if(length(prog) > 3) "..." else "", ")")
-  message("[DEBUG] Differentiation markers found: ", length(diff), "/", length(differentiation_markers),
-          " (", paste(head(diff, 3), collapse = ", "), if(length(diff) > 3) "..." else "", ")")
-
-  # Check if we have enough markers for scoring
-  min_markers_required <- 1  # Minimum markers needed for scoring
-
-  if (length(prog) < min_markers_required) {
-    warning("Insufficient progenitor markers found (", length(prog), "/", length(progenitor_markers), "). Using default scoring.")
-    message("[WARNING] Progenitor scoring skipped, using random cluster selection.")
-    # Return first cluster as root for simplicity
-    cluster_levels <- levels(factor(seurat@meta.data$seurat_clusters))
-    if (length(cluster_levels) > 0) {
-      return(cluster_levels[1])
-    } else {
-      return("0")
-    }
+  # Check if cell cycle scores exist
+  if (!all(c("S.Score", "G2M.Score") %in% colnames(seurat@meta.data))) {
+    stop("Cell cycle scores (S.Score, G2M.Score) not found in metadata. Run cell cycle scoring first.")
   }
 
-  if (length(diff) < min_markers_required) {
-    warning("Insufficient differentiation markers found (", length(diff), "/", length(differentiation_markers), "). Using default scoring.")
-    message("[WARNING] Differentiation scoring will use available progenitor markers only.")
-    # Use prog markers for both if diff is not available
-    diff <- prog
-  }
+  # Calculate cluster-level cell cycle scores
+  meta <- seurat@meta.data |>
+    dplyr::transmute(cluster = as.character(seurat_clusters),
+                     cycle  = S.Score + G2M.Score)
 
-  message("[INFO] Using ", length(prog), " progenitor and ", length(diff), " differentiation markers for scoring.")
+  scores <- meta |>
+    dplyr::group_by(cluster) |>
+    dplyr::summarise(cycle = mean(cycle),
+                     n = dplyr::n(),
+                     .groups = "drop") |>
+    dplyr::mutate(cycle_sc = scales::rescale(cycle, to = c(0, 1))) |>
+    dplyr::arrange(dplyr::desc(cycle_sc))  # Higher cell cycle score = more progenitor-like
 
-  seurat |>
-    Seurat::AddModuleScore(list(prog), name = "Prog") |>
-    Seurat::AddModuleScore(list(diff), name = "Diff") |>
-    {\(so) {
-      meta <- so@meta.data |>
-        dplyr::transmute(cluster = as.character(seurat_clusters),
-                         prog   = Prog1,
-                         cycle  = S.Score + G2M.Score,
-                         diff   = Diff1)
+  message("[INFO] Root cluster selected based on cell cycle score: ", scores$cluster[1],
+          " (cycle_sc: ", round(scores$cycle_sc[1], 3), ")")
+  message("[DEBUG] Root cluster details - cycle: ", round(scores$cycle[1], 3),
+          ", n_cells: ", scores$n[1])
 
-      scores <- meta |>
-        dplyr::group_by(cluster) |>
-        dplyr::summarise(dplyr::across(c(prog, cycle, diff), mean),
-                         n = dplyr::n(),
-                         .groups = "drop") |>
-        dplyr::mutate(prog_sc  = scales::rescale(prog,  to = c(0, 1)),
-                      cycle_sc = scales::rescale(cycle, to = c(0, 1)),
-                      diff_sc  = scales::rescale(diff,  to = c(0, 1)),
-                      root_score = 2*prog_sc + 0.5*cycle_sc - 3*diff_sc) |>
-        dplyr::arrange(dplyr::desc(root_score))
-
-      message("[INFO] Root cluster selected: ", scores$cluster[1], " (score: ", round(scores$root_score[1], 3), ")")
-      message("[DEBUG] Root cluster details - prog: ", round(scores$prog[1], 3),
-              ", cycle: ", round(scores$cycle[1], 3), ", diff: ", round(scores$diff[1], 3), ")")
-
-      list(start_cluster = scores$cluster[1],
-           score_table   = scores,
-           seurat        = so)
-    }}()
+  list(start_cluster = scores$cluster[1],
+       score_table   = scores,
+       seurat        = seurat)
 }
 
 # ───────────────────── 5. Slingshot (latent) ───────────────────────────────
@@ -772,7 +736,7 @@ make_plots <- function(seurat,
                         names_to  = "metric",
                         values_to = "value") |>
     dplyr::mutate(metric = factor(metric,
-                                  c("prog", "cycle", "diff", "root_score"))) |>
+                                  c("cycle", "cycle_sc", "n"))) |>
     ggplot2::ggplot(ggplot2::aes(cluster, metric, fill = value)) +
       ggplot2::geom_tile() +
       ggplot2::geom_text(ggplot2::aes(label = round(value, 2)),
@@ -850,11 +814,10 @@ create_score_umaps <- function(meta, start_cluster) {
   plots <- list()
 
   # Define score columns and their display properties
+  # Note: Only cell cycle scores are used (tissue-specific markers removed)
   score_configs <- list(
     list(col = "S.Score", title = "S Phase Score", color_scale = "viridis"),
-    list(col = "G2M.Score", title = "G2M Phase Score", color_scale = "viridis"),
-    list(col = "Prog1", title = "Progenitor Score", color_scale = "plasma"),
-    list(col = "Diff1", title = "Differentiation Score", color_scale = "plasma")
+    list(col = "G2M.Score", title = "G2M Phase Score", color_scale = "viridis")
   )
 
   # Add combined cell cycle score if both S and G2M scores exist
@@ -865,18 +828,8 @@ create_score_umaps <- function(meta, start_cluster) {
     ))
   }
 
-  # Add root score if available (calculate from cluster-level scores)
-  if ("Prog1" %in% colnames(meta) && "Diff1" %in% colnames(meta) && "S.Score" %in% colnames(meta) && "G2M.Score" %in% colnames(meta)) {
-    # Calculate individual cell root scores
-    prog_scaled <- scales::rescale(meta$Prog1, to = c(0, 1))
-    cycle_scaled <- scales::rescale(meta$S.Score + meta$G2M.Score, to = c(0, 1))
-    diff_scaled <- scales::rescale(meta$Diff1, to = c(0, 1))
-    meta$root_score_individual <- 2*prog_scaled + 0.5*cycle_scaled - 3*diff_scaled
-
-    score_configs <- append(score_configs, list(
-      list(col = "root_score_individual", title = "Root Score (Individual)", color_scale = "inferno")
-    ))
-  }
+  # Note: Legacy root score calculation (using tissue-specific markers) has been removed
+  # Only cell cycle scores are used for trajectory analysis
 
   # Create UMAP plot for each score
   for (config in score_configs) {
@@ -939,17 +892,13 @@ create_score_umaps <- function(meta, start_cluster) {
 create_score_distributions <- function(meta) {
   plots <- list()
 
-  # Score columns to analyze
-  score_columns <- c("S.Score", "G2M.Score", "Prog1", "Diff1")
+  # Score columns to analyze (only cell cycle scores)
+  score_columns <- c("S.Score", "G2M.Score")
 
-  # Add combined scores if available
+  # Add combined cell cycle score if available
   if ("S.Score" %in% colnames(meta) && "G2M.Score" %in% colnames(meta)) {
     meta$cycle_combined <- meta$S.Score + meta$G2M.Score
     score_columns <- c(score_columns, "cycle_combined")
-  }
-
-  if ("root_score_individual" %in% colnames(meta)) {
-    score_columns <- c(score_columns, "root_score_individual")
   }
 
   for (score_col in score_columns) {
@@ -1002,21 +951,13 @@ generate_score_summaries <- function(seurat, score_table, output_dir) {
   meta <- seurat@meta.data
 
   # Define score columns to analyze
-  score_columns <- c("S.Score", "G2M.Score", "Prog1", "Diff1")
+  # Score columns to analyze (only cell cycle scores)
+  score_columns <- c("S.Score", "G2M.Score")
 
   # Add combined cell cycle score
   if ("S.Score" %in% colnames(meta) && "G2M.Score" %in% colnames(meta)) {
     meta$cycle_combined <- meta$S.Score + meta$G2M.Score
     score_columns <- c(score_columns, "cycle_combined")
-  }
-
-  # Add individual root scores
-  if ("Prog1" %in% colnames(meta) && "Diff1" %in% colnames(meta) && "S.Score" %in% colnames(meta) && "G2M.Score" %in% colnames(meta)) {
-    prog_scaled <- scales::rescale(meta$Prog1, to = c(0, 1))
-    cycle_scaled <- scales::rescale(meta$S.Score + meta$G2M.Score, to = c(0, 1))
-    diff_scaled <- scales::rescale(meta$Diff1, to = c(0, 1))
-    meta$root_score_individual <- 2*prog_scaled + 0.5*cycle_scaled - 3*diff_scaled
-    score_columns <- c(score_columns, "root_score_individual")
   }
 
   # 1. Overall summary statistics
@@ -1106,16 +1047,8 @@ generate_score_summaries <- function(seurat, score_table, output_dir) {
 
     if (length(cluster_idx) > 0) {
       # Add CV (coefficient of variation) for each score type
-      if ("Prog1" %in% colnames(cluster_cells)) {
-        prog_values <- cluster_cells$Prog1[!is.na(cluster_cells$Prog1)]
-        enhanced_score_table$prog_cv[cluster_idx] <- if(length(prog_values) > 0 && mean(prog_values) != 0) sd(prog_values) / abs(mean(prog_values)) else 0
-      }
-
-      if ("Diff1" %in% colnames(cluster_cells)) {
-        diff_values <- cluster_cells$Diff1[!is.na(cluster_cells$Diff1)]
-        enhanced_score_table$diff_cv[cluster_idx] <- if(length(diff_values) > 0 && mean(diff_values) != 0) sd(diff_values) / abs(mean(diff_values)) else 0
-      }
-
+      # Note: Tissue-specific marker CV calculations removed (Prog1, Diff1)
+      # Only cell cycle scores are analyzed
       if ("S.Score" %in% colnames(cluster_cells) && "G2M.Score" %in% colnames(cluster_cells)) {
         cycle_values <- (cluster_cells$S.Score + cluster_cells$G2M.Score)[!is.na(cluster_cells$S.Score + cluster_cells$G2M.Score)]
         enhanced_score_table$cycle_cv[cluster_idx] <- if(length(cycle_values) > 0 && mean(cycle_values) != 0) sd(cycle_values) / abs(mean(cycle_values)) else 0
@@ -1962,8 +1895,7 @@ plotSlingshotMST_latent <- function(sce,
 run_pipeline <- function(sample_id,
                          h5ad_file,
                          out_dir,
-                         progenitor      = c("SOX2", "NES", "HES1", "PAX6", "ASCL1"),
-                         differentiation = c("MAP2", "DCX"),
+                         root_cluster    = NULL,  # Manual root cluster specification
                          marker_file     = "/home/yuyasato/work3/vhco_season2/meta/__markers.tsv",
                          resolution      = 0.5,
                          latent_dims     = 1:10,
@@ -1994,9 +1926,7 @@ run_pipeline <- function(sample_id,
                 message("[INFO] Exclude filters specified, bypassing cache to apply filtering")
               }
               read_inputs(h5ad_file,
-                          progenitor,
-                          differentiation,
-                          marker_file) |>
+                          marker_file = marker_file) |>
               apply_exclude_filters(exclude_json = exclude_json) |>
               preprocess_seurat_latent(latent_dims = latent_dims,
                                        resolution  = resolution) |>
@@ -2011,9 +1941,18 @@ run_pipeline <- function(sample_id,
   }
 
   # ── 2. Root cluster ───────────────────────────────────────────────────
-  root_info <- select_root_cluster(seurat,
-                                   progenitor,
-                                   differentiation)
+  # Use manual root cluster if specified, otherwise auto-select
+  if (!is.null(root_cluster)) {
+    message("[INFO] Using manually specified root cluster: ", root_cluster)
+    root_info <- list(
+      start_cluster = as.character(root_cluster),
+      score_table = NULL,
+      seurat = seurat
+    )
+  } else {
+    message("[INFO] Auto-selecting root cluster based on cell cycle scoring...")
+    root_info <- select_root_cluster(seurat)
+  }
 
   # ── 3. Slingshot ──────────────────────────────────────────────────────
   # Detect the latent reduction name
@@ -2218,10 +2157,10 @@ if (!interactive()) {
   sample_id <- NULL
   h5ad_file <- NULL
   out_dir <- NULL
+  root_cluster <- NULL  # NEW: Manual root cluster
   resolution <- 0.5
   latent_dims <- 1:10
   cell_cycle_tsv <- "/home/yuyasato/work3/vhco_season2/meta/__cell_cycle_markers.tsv"
-  root_marker_tsv <- "/home/yuyasato/work3/vhco_season2/meta/__root_markers.tsv"
   canonical_marker_tsv <- "/home/yuyasato/work3/vhco_season2/meta/__markers.tsv"
   force_rerun <- FALSE
   no_rds <- FALSE
@@ -2255,9 +2194,6 @@ if (!interactive()) {
     } else if (args[i] == "--cell_cycle_tsv") {
       cell_cycle_tsv <- args[i + 1]
       i <- i + 2
-    } else if (args[i] == "--root_marker_tsv") {
-      root_marker_tsv <- args[i + 1]
-      i <- i + 2
     } else if (args[i] == "--canonical_marker_tsv") {
       canonical_marker_tsv <- args[i + 1]
       i <- i + 2
@@ -2269,6 +2205,9 @@ if (!interactive()) {
       i <- i + 2
     } else if (args[i] == "--exclude") {
       exclude_json <- args[i + 1]
+      i <- i + 2
+    } else if (args[i] == "--root_cluster") {
+      root_cluster <- args[i + 1]
       i <- i + 2
     } else {
       i <- i + 1
@@ -2286,8 +2225,8 @@ if (!interactive()) {
     cat("  --resolution FLOAT           Clustering resolution (default: 0.5)\n")
     cat("  --latent_dims RANGE          Latent dimensions range (default: 1:10)\n")
     cat("  --cell_cycle_tsv FILE        Cell cycle markers file\n")
-    cat("  --root_marker_tsv FILE       Root markers file\n")
     cat("  --canonical_marker_tsv FILE  Canonical markers file\n")
+    cat("  --root_cluster CLUSTER       Manually specify root cluster (skips auto-detection)\n")
     cat("  --force_rerun TRUE/FALSE     Force rerun (default: FALSE)\n")
     cat("  --no_rds TRUE/FALSE          Skip saving RDS files for speed (default: FALSE)\n")
     cat("  --exclude JSON               Exclude cells based on metadata (JSON format)\n")
@@ -2300,6 +2239,7 @@ if (!interactive()) {
       sample_id = sample_id,
       h5ad_file = h5ad_file,
       out_dir = out_dir,
+      root_cluster = root_cluster,
       marker_file = canonical_marker_tsv,
       resolution = resolution,
       latent_dims = latent_dims,

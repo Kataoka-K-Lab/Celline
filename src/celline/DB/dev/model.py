@@ -11,19 +11,16 @@ from typing import (
     Optional,
     get_origin,
     get_args,
+    Any,
 )
 from celline.utils.exceptions import NullPointException
-import polars as pl
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, asdict
 
-# from celline.config import Config
 from abc import ABCMeta, abstractmethod, ABC
 import os
-import inspect
 
-from pprint import pprint
-from polars import Expr
 from celline.config import Config
+from celline.DB.dev.excel_handler import ExcelMetadataHandler
 
 ## Type vars #############
 TPrimary = TypeVar("TPrimary")
@@ -87,30 +84,64 @@ TSchema = TypeVar("TSchema", bound=BaseSchema)
 
 
 class BaseModel(Generic[TSchema], ABC):
-    _df: pl.DataFrame
+    _excel_handler: ExcelMetadataHandler
     __class_name: str = ""
     schema: Final[Type[TSchema]]
-    PATH: Final[str]
-    EXEC_ROOT: Final[str]
+    EXCEL_PATH: str
+    _sheet_name: str = ""
 
-    def __init__(self) -> None:
+    def __init__(self, validate_on_init: bool = False) -> None:
         self.__class_name = self.set_class_name()
         self.schema = self.def_schema()
-        self.EXEC_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        self.PATH = f"{self.EXEC_ROOT}/DB/{self.__class_name}.parquet"
-        if os.path.isfile(self.PATH):
-            self._df = pl.read_parquet(self.PATH)
+        # Get PROJ_ROOT from running Config instance
+        if Config.current in Config.runnings:
+            self.EXCEL_PATH = f"{Config.runnings[Config.current].PROJ_ROOT}/metadata.xlsx"
         else:
-            self._df = pl.DataFrame(
-                {},
-                schema={
-                    name: get_args(t)[0]
-                    if hasattr(t, "__origin__") and t.__origin__ is Primary
-                    else t
-                    for name, t in get_type_hints(self.schema).items()
-                },
-            )
-            self._df.write_parquet(self.PATH)
+            raise RuntimeError("Config not initialized. Please create a Config instance first.")
+        self._sheet_name = self._get_sheet_name()
+        self._excel_handler = ExcelMetadataHandler(self.EXCEL_PATH)
+
+        # Only validate structure on init, not data integrity
+        if validate_on_init:
+            self._validate_structure_only()
+
+    def _get_sheet_name(self) -> str:
+        """Determine the sheet name (samples, projects, or runs) based on schema type."""
+        if issubclass(self.schema, SampleSchema):
+            return "samples"
+        elif issubclass(self.schema, RunSchema):
+            return "runs"
+        else:
+            return "projects"
+
+    def _validate_structure_only(self) -> None:
+        """Validate only Excel file structure (sheets and columns)."""
+        structure_result = self._excel_handler.validate_structure()
+        if not structure_result.is_valid:
+            error_msgs = [f"{e.error_type}: {e.message}" for e in structure_result.errors]
+            raise ValueError(f"Excel structure validation failed:\n" + "\n".join(error_msgs))
+
+    def validate_data_integrity(self) -> None:
+        """
+        Validate data integrity across all sheets.
+        This should be called manually after all data has been added.
+        """
+        integrity_result = self._excel_handler.validate_data_integrity()
+        if not integrity_result.is_valid:
+            error_msgs = [
+                f"Sheet '{e.sheet}' Row {e.row} Column '{e.column}': {e.error_type} - {e.message}"
+                for e in integrity_result.errors
+            ]
+            raise ValueError(f"Excel data integrity validation failed:\n" + "\n".join(error_msgs))
+
+        # Log warnings
+        if integrity_result.warnings:
+            import warnings
+            for w in integrity_result.warnings:
+                warnings.warn(
+                    f"Sheet '{w.sheet}' Row {w.row} Column '{w.column}': {w.error_type} - {w.message}",
+                    UserWarning
+                )
 
     @abstractmethod
     def set_class_name(self) -> str:
@@ -120,123 +151,89 @@ class BaseModel(Generic[TSchema], ABC):
     def def_schema(self) -> Type[TSchema]:
         return
 
-    # TS = TypeVar("TS", bound=Schema)
-
     @abstractmethod
     def search(self, acceptable_id: str, force_search=False) -> TSchema:
         return
 
-    def exists(self, acceptable_id: str):
-        return (self.stored.filter(self.plptr("key") == acceptable_id).shape[0]) != 0
+    def exists(self, acceptable_id: str) -> bool:
+        """Check if an entry exists in the storage."""
+        record = self._excel_handler.get_record(self._sheet_name, acceptable_id)
+        return record is not None
 
     def get_cache(self, acceptable_id: str, force_search=False) -> Optional[TSchema]:
+        """Get cached entry if exists and force_search is False."""
         if self.exists(acceptable_id) and not force_search:
-            return self.as_schema(
-                self.stored.filter(self.plptr("key") == acceptable_id).head(1),
-            )[0]
+            record = self._excel_handler.get_record(self._sheet_name, acceptable_id)
+            if record:
+                return self._dict_to_schema(record)
         return None
 
-    def as_schema(self, _df: Optional[pl.DataFrame] = None) -> List[TSchema]:
-        if _df is None:
-            _df = self._df
-
+    def _dict_to_schema(self, data: Dict[str, Any]) -> TSchema:
+        """Convert dictionary to schema instance."""
+        import pandas as pd
         type_hints = get_type_hints(self.schema)
+        kwargs = {}
+        for field_name, field_type in type_hints.items():
+            if field_name in data:
+                value = data[field_name]
+                # Handle pandas NaN
+                if pd.isna(value):
+                    kwargs[field_name] = None
+                elif get_origin(field_type) is Primary:
+                    kwargs[field_name] = str(value) if value is not None else None
+                else:
+                    kwargs[field_name] = value
+            else:
+                kwargs[field_name] = None
+        return self.schema(**kwargs)
 
-        data = _df.to_pandas().itertuples(index=False)
-        return [
-            self.schema(
-                *(
-                    str(Primary(val)) if get_origin(type_hint) is Primary else val
-                    for val, type_hint in zip(t, type_hints.values())
-                )
-            )
-            for t in data
-        ]
+    def _schema_to_dict(self, schema_instance: TSchema) -> Dict[str, Any]:
+        """Convert schema instance to dictionary."""
+        result = {}
+        for field in fields(schema_instance):
+            value = getattr(schema_instance, field.name)
+            if isinstance(value, Primary):
+                result[field.name] = str(value)
+            else:
+                result[field.name] = value if value is not None else ""
+        return result
+
+    def as_schema(self, keys: Optional[List[str]] = None) -> List[TSchema]:
+        """Convert stored data to schema instances."""
+        df = self._excel_handler.read_sheet(self._sheet_name)
+        if df.empty:
+            return []
+
+        if keys is not None:
+            df = df[df["key"].astype(str).isin(keys)]
+
+        result = []
+        for _, row in df.iterrows():
+            result.append(self._dict_to_schema(row.to_dict()))
+        return result
 
     def get(
         self, target_schema: Type[TSchema], filter_func: Callable[[TSchema], bool]
     ) -> List[TSchema]:
-        type_hints = get_type_hints(target_schema)
+        """Get entries matching the filter function."""
+        all_records = self.as_schema()
+        return [record for record in all_records if filter_func(record)]
 
-        data = self._df.to_pandas().itertuples(index=False)
-        result: List[TSchema] = []
-        for schema_each in [
-            target_schema(
-                *(
-                    val if get_origin(type_hint) is Primary else val
-                    for val, type_hint in zip(t, type_hints.values())
-                )
-            )
-            for t in data
-        ]:
-            if filter_func(schema_each):
-                result.append(schema_each)
-        return result
-        # tname = ""
-        # for name in self.schema._fields:
-        #     if getattr(self.schema, name) == filter_col:
-        #         tname = name
-        #         break
-        # if tname == "":
-        #     raise NullPointException(
-        #         "Plptr is unknown. Please designate ***.Scheme.***"
-        #     )
-        # target_column: List = []
-        # for column in self._df.get_column(tname).to_list():
-        #     if filter_func(column):
-        #         target_column.append(column)
-        # # target_df = self._df.filter(pl.col(tname).is_in(target_column))
-        # # self.schema(target_df)
-        # return [
-        #     self.schema(*row)
-        #     for row in self._df.filter(pl.col(tname).is_in(target_column))
-        #     .to_pandas()
-        #     .itertuples(index=False)
-        # ]  # type: ignore
-
-    def plptr(self, col) -> pl.Expr:
-        """Returns a pointer to the column that applies to col."""
-        tname = ""
-
-        for field in fields(self.schema):
-            if field.name == col:
-                tname = field.name
-                # type_origin = get_origin(field.type)
-                # if type_origin is not None:
-                #     tname = get_args(field.type)[0]
-                #     print(f"{field.name}: {field.type} -> {tname}")
-                #     break
-                # else:
-                #     tname = field.type
-        if tname == "":
-            raise NullPointException(
-                "Plptr is unknown. Please designate ***.Scheme.***"
-            )
-        return pl.col(tname)
-
-    def get_all_type_hints(cls: Type) -> dict:  # type: ignore
+    def get_all_type_hints(cls: Type) -> dict:
+        """Get all type hints including from base classes."""
         hints = {}
         for base in reversed(cls.mro()):
             hints.update(get_type_hints(base))
         return hints
 
-    def as_dataframe(self, schema_instance: TSchema) -> pl.DataFrame:
-        type_hints = BaseModel.get_all_type_hints(type(schema_instance))
-        for field, type_hint in type_hints.items():
-            if get_origin(type_hint) is Primary:
-                type_hints[field] = get_args(type_hint)[0]  # Replace Primary[T] with T
-
-        return pl.DataFrame(
-            {
-                f.name: [getattr(schema_instance, f.name)]
-                for f in fields(schema_instance)
-            },
-            schema=type_hints,
-        )
-
     def add_schema(
         self, schema_instance: TSchema, force_update: bool = True
     ) -> TSchema:
+        """
+        Add or update a schema instance in storage.
+        Note: Does not validate data integrity automatically.
+        Call validate_data_integrity() manually when all data is added.
+        """
         all_t: Dict[str, Type] = BaseModel.get_all_type_hints(type(schema_instance))
         primary_fields = [
             field
@@ -249,22 +246,23 @@ class BaseModel(Generic[TSchema], ABC):
         if len(primary_fields) > 1:
             raise MultiplePrimaryKeysError("Multiple primary keys found.")
 
-        mask: Expr = pl.lit(True)
-        if force_update:
-            for primary_field in primary_fields:
-                primary_val = getattr(schema_instance, primary_field.name)
-                mask &= pl.col(primary_field.name) == primary_val
+        primary_key = str(getattr(schema_instance, primary_fields[0].name))
+        record = self._schema_to_dict(schema_instance)
 
-            if self._df.filter(mask).shape[0] > 0:
-                self._df = self._df.filter(~mask)
-        newdata = self.as_dataframe(schema_instance)
-        self._df = pl.concat([self._df, newdata])
-        self.flush()
-        return self.as_schema(newdata)[0]
+        self._excel_handler.add_or_update_record(self._sheet_name, record)
+
+        # Return the stored record
+        stored_record = self._excel_handler.get_record(self._sheet_name, primary_key)
+        if stored_record:
+            return self._dict_to_schema(stored_record)
+        return schema_instance
 
     def flush(self):
-        self._df.write_parquet(f"{self.EXEC_ROOT}/DB/{self.__class_name}.parquet")
+        """Flush data to Excel file (not needed as writes are immediate)."""
+        pass
 
     @property
-    def stored(self) -> pl.DataFrame:
-        return self._df
+    def stored(self) -> List[Dict[str, Any]]:
+        """Return all stored data as list of dictionaries."""
+        df = self._excel_handler.read_sheet(self._sheet_name)
+        return df.to_dict('records')

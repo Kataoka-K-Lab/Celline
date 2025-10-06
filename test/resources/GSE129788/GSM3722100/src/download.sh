@@ -1,11 +1,11 @@
 #!/bin/bash
 #PBS -S /bin/bash
-#PBS -l nodes=1:ppn=1:
-#PBS -q 
+#PBS -l nodes=1:ppn=1
+#PBS -q default
 #PBS -N Download
 #PBS -j eo
 #PBS -m ae
-#PBS -e ./resources/GSE129788/GSM3722100/logs/download_20250406_00:09:10.log
+#PBS -e /mnt/work3/yuyasato/libs/Celline/test/resources/GSE129788/GSM3722100/logs/download_20251002_00:54:08.log
 
 ## Check command ##
 if [ -e "$HOME/.bashrc" ]; then
@@ -41,7 +41,7 @@ get_median_length() {
 filetype="bam"
 sample_id="GSM3722100"
 
-mkdir -p "./resources/GSE129788/GSM3722100/raw" && cd "./resources/GSE129788/GSM3722100/raw"
+mkdir -p "/mnt/work3/yuyasato/libs/Celline/test/resources/GSE129788/GSM3722100/raw" && cd "/mnt/work3/yuyasato/libs/Celline/test/resources/GSE129788/GSM3722100/raw"
 
 if [ "$filetype" = "bam" ]; then
     if [ ! -f "$sample_id.bam" ]; then

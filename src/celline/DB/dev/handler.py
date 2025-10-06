@@ -5,10 +5,8 @@ import inspect
 import os
 from typing import Dict, Final, Generic, List, Optional, Type, TypeVar, Union
 
-import polars as pl
-import toml
-
 from celline.DB.dev.model import BaseModel, BaseSchema
+from celline.DB.dev.excel_handler import ExcelMetadataHandler
 from celline.config import Config
 from celline.plugins.reflection.activator import Activator
 from celline.plugins.reflection.method import MethodInfo
@@ -28,19 +26,23 @@ class BaseHandler(Generic[TProject, TSample, TRun], ABC):
     _project: Optional[TProject] = None
     _sample: Optional[TSample] = None
     _run: Optional[TRun] = None
-    _df: pl.DataFrame
-    _samples: Dict[str, str] = {}
-    """Samples which is composed by SampleID(key) and Title(value)"""
+    _excel_handler: ExcelMetadataHandler
+    """Excel metadata handler"""
 
-    def __init__(self) -> None:
-        """#### Set acceptable ID"""
-        BaseHandler.SAMPLE_PATH: Final[str] = f"{Config.PROJ_ROOT}/samples.toml"
-        if os.path.isfile(BaseHandler.SAMPLE_PATH):
-            with open(BaseHandler.SAMPLE_PATH, mode="r", encoding="utf-8") as f:
-                self._samples = toml.load(f)
+    def __init__(self, use_ai: bool = False, ai_provider: str = "auto") -> None:
+        """#### Initialize Excel handler
+
+        Args:
+            use_ai: Enable AI metadata extraction
+            ai_provider: AI provider to use ("openai", "claude", or "auto")
+        """
+        if Config.current in Config.runnings:
+            excel_path = f"{Config.runnings[Config.current].PROJ_ROOT}/metadata.xlsx"
         else:
-            with open(BaseHandler.SAMPLE_PATH, mode="w", encoding="utf-8") as f:
-                toml.dump(self._samples, f)
+            raise RuntimeError("Config not initialized. Please create a Config instance first.")
+        self._excel_handler = ExcelMetadataHandler(excel_path)
+        self._use_ai = use_ai
+        self._ai_provider = ai_provider
 
     @abstractmethod
     def resolver(self, acceptable_id: str) -> Union[TProject, TSample, TRun]:
@@ -68,10 +70,10 @@ class BaseHandler(Generic[TProject, TSample, TRun], ABC):
         return self._run
 
     def add(self, acceptable_id: str, force_search=False):
-        """Add to DB & samples.toml with acceptable_id"""
+        """Add to DB & metadata.xlsx with acceptable_id"""
         logger = get_logger(__name__)
         logger.info(f"Starting to add {acceptable_id} to database")
-        
+
         resolver = self.resolver(acceptable_id)
         if isinstance(self.project, resolver):
             logger.info(f"Identified {acceptable_id} as project type, fetching project data")
@@ -83,17 +85,13 @@ class BaseHandler(Generic[TProject, TSample, TRun], ABC):
                 )
             sample_ids = sample_ids.split(",")
             logger.info(f"Found {len(sample_ids)} samples in project {acceptable_id}: {sample_ids}")
-            
+
             samples: List[BaseSchema] = []
             for i, sample_id in enumerate(sample_ids, 1):
                 logger.info(f"Fetching sample {i}/{len(sample_ids)}: {sample_id}")
-                try:
-                    sample = self.sample.search(sample_id)
-                    samples.append(sample)
-                    logger.info(f"Successfully fetched sample {sample_id}")
-                except Exception as e:
-                    logger.error(f"Failed to fetch sample {sample_id}: {str(e)}")
-                    raise
+                sample = self.sample.search(sample_id)
+                samples.append(sample)
+                logger.info(f"Successfully fetched sample {sample_id}")
             for j, sample in enumerate(samples, 1):
                 logger.info(f"Processing sample {j}/{len(samples)}: {sample.key}")
                 if sample.title is None:
@@ -104,14 +102,21 @@ class BaseHandler(Generic[TProject, TSample, TRun], ABC):
                     logger.info(f"Found {len(run_ids)} runs for sample {sample.key}")
                     for k, target_run_id in enumerate(run_ids, 1):
                         logger.info(f"Fetching run {k}/{len(run_ids)}: {target_run_id}")
-                        try:
-                            self.run.search(target_run_id)
-                            logger.info(f"Successfully fetched run {target_run_id}")
-                        except Exception as e:
-                            logger.error(f"Failed to fetch run {target_run_id}: {str(e)}")
-                            raise
-                self._add_to_projsample({str(sample.key): sample.title})
-                logger.info(f"Added sample {sample.key} to project samples")
+                        self.run.search(target_run_id)
+                        logger.info(f"Successfully fetched run {target_run_id}")
+                logger.info(f"Sample {sample.key} already added to Excel by model.add_schema()")
+
+                # Extract AI metadata if enabled
+                if self._use_ai:
+                    self._extract_ai_metadata(str(sample.key), sample)
+
+            # Add all samples to available_samples
+            logger.info(f"Adding {len(sample_ids)} samples to available_samples")
+            self._excel_handler.add_multiple_to_available_samples(sample_ids)
+
+            logger.info("All data added, validating integrity...")
+            self._validate_all_integrity()
+
         elif isinstance(self.sample, resolver):
             logger.info(f"Identified {acceptable_id} as sample type, fetching sample data")
             sample: BaseSchema = self.sample.search(acceptable_id, force_search)
@@ -123,17 +128,24 @@ class BaseHandler(Generic[TProject, TSample, TRun], ABC):
                 logger.info(f"Found {len(run_list)} runs for sample {acceptable_id}")
                 for i, run_id in enumerate(run_list, 1):
                     logger.info(f"Fetching run {i}/{len(run_list)}: {run_id}")
-                    try:
-                        self.run.search(run_id)
-                        logger.info(f"Successfully fetched run {run_id}")
-                    except Exception as e:
-                        logger.error(f"Failed to fetch run {run_id}: {str(e)}")
-                        raise
+                    self.run.search(run_id)
+                    logger.info(f"Successfully fetched run {run_id}")
             if sample.parent is not None:
                 logger.info(f"Fetching parent project {sample.parent} for sample {acceptable_id}")
                 self.project.search(sample.parent, force_search)
-            self._add_to_projsample({str(sample.key): sample.title})
-            logger.info(f"Added sample {acceptable_id} to project samples")
+            logger.info(f"Sample {acceptable_id} already added to Excel by model.add_schema()")
+
+            # Extract AI metadata if enabled
+            if self._use_ai:
+                self._extract_ai_metadata(acceptable_id, sample)
+
+            # Add to available_samples
+            logger.info(f"Adding {acceptable_id} to available_samples")
+            self._excel_handler.add_to_available_samples(acceptable_id)
+
+            logger.info("All data added, validating integrity...")
+            self._validate_all_integrity()
+
         elif isinstance(self.run, resolver):
             run: BaseSchema = self.run.search(acceptable_id, force_search)
             if run.parent is None:
@@ -152,31 +164,126 @@ class BaseHandler(Generic[TProject, TSample, TRun], ABC):
             self.project.search(str(sample.key), force_search)
             if sample.title is None:
                 sample.title = ""
-            self._add_to_projsample({str(sample.key): sample.title})
+            logger.info(f"Run {acceptable_id} and related data already added to Excel by model.add_schema()")
+
+            logger.info("All data added, validating integrity...")
+            self._validate_all_integrity()
+
+    def _extract_ai_metadata(self, accession_id: str, schema: BaseSchema) -> Dict:
+        """
+        Extract AI metadata for a sample and add to Excel.
+
+        Args:
+            accession_id: Sample accession ID
+            schema: Schema instance with raw_link or other metadata
+
+        Returns:
+            Dictionary with AI-extracted metadata
+        """
+        if not self._use_ai:
+            return {}
+
+        logger = get_logger(__name__)
+
+        try:
+            from celline.utils.ai_metadata import AIMetadataExtractor
+            import requests
+            from bs4 import BeautifulSoup
+            from rich.console import Console
+
+            console = Console()
+
+            # Try to get URL from schema
+            url = None
+            if hasattr(schema, 'raw_link') and schema.raw_link:
+                # Use raw_link if available
+                url = str(schema.raw_link)
+            else:
+                # Try to construct URL based on accession pattern
+                if accession_id.startswith('GSM'):
+                    url = f"https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc={accession_id}"
+                elif accession_id.startswith('E-'):
+                    url = f"https://www.ebi.ac.uk/biostudies/arrayexpress/studies/{accession_id}"
+                elif accession_id.startswith('SAMEA') or accession_id.startswith('SAMN'):
+                    url = f"https://www.ebi.ac.uk/biosamples/samples/{accession_id}"
+
+            if not url:
+                logger.info(f"No URL available for AI extraction for {accession_id}")
+                return {}
+
+            logger.info(f"Fetching URL for AI extraction: {url}")
+            console.print(f"[cyan]Fetching metadata from {url}...[/cyan]")
+
+            # Fetch page content
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+
+            # Extract text from HTML
+            soup = BeautifulSoup(response.text, 'html.parser')
+            for script in soup(["script", "style"]):
+                script.decompose()
+            text = soup.get_text(separator='\n', strip=True)
+
+            # Extract metadata using AI
+            extractor = AIMetadataExtractor(provider=self._ai_provider)
+            ai_metadata = extractor.extract_metadata(text, accession_id)
+
+            if ai_metadata:
+                # Add AI metadata to sample sheet
+                # Prefix AI fields with "ai_" to distinguish them
+                current_record = self._excel_handler.get_record("samples", accession_id)
+                if current_record:
+                    # Merge AI metadata with existing record
+                    for key, value in ai_metadata.items():
+                        if value and value != "unknown":
+                            current_record[f"ai_{key}"] = value
+
+                    self._excel_handler.add_or_update_record("samples", current_record)
+                    logger.info(f"AI metadata added to {accession_id}: {len(ai_metadata)} fields")
+                    console.print(f"[green]✓ AI metadata added: {', '.join(ai_metadata.keys())}[/green]")
+
+            return ai_metadata
+
+        except ImportError as e:
+            logger.warning(f"AI extraction dependencies not installed: {e}")
+            from rich.console import Console
+            Console().print(f"[yellow]⚠ AI extraction requires: beautifulsoup4, requests, python-dotenv[/yellow]")
+            return {}
+        except Exception as e:
+            logger.warning(f"AI metadata extraction failed for {accession_id}: {e}")
+            return {}
+
+    def _validate_all_integrity(self):
+        """Validate data integrity across all sheets after all data has been added."""
+        logger = get_logger(__name__)
+        try:
+            integrity_result = self._excel_handler.validate_data_integrity()
+            if not integrity_result.is_valid:
+                error_msgs = [
+                    f"Sheet '{e.sheet}' Row {e.row} Column '{e.column}': {e.error_type} - {e.message}"
+                    for e in integrity_result.errors
+                ]
+                logger.error(f"Data integrity validation failed:\n" + "\n".join(error_msgs))
+                raise ValueError(f"Data integrity validation failed:\n" + "\n".join(error_msgs))
+
+            # Log warnings if any
+            if integrity_result.warnings:
+                import warnings
+                for w in integrity_result.warnings:
+                    warning_msg = f"Sheet '{w.sheet}' Row {w.row} Column '{w.column}': {w.error_type} - {w.message}"
+                    logger.warning(warning_msg)
+                    warnings.warn(warning_msg, UserWarning)
+
+            logger.info("Data integrity validation passed")
+        except Exception as e:
+            logger.error(f"Validation error: {str(e)}")
+            raise
 
     def sync(self, force_research=False):
-        """Sync DB from samples.toml"""
-        for sample in self._samples:
-            self.add(sample, force_search=force_research)
-
-    def _add_to_projsample(
-        self, sample_info: Union[Dict[str, str], List[Dict[str, str]]]
-    ):
-        if isinstance(sample_info, list):
-            for sample in sample_info:
-                self._add_to_projsample(sample)
-            return
-        self._flush_to_append(
-            list(str(k) for k in sample_info.keys())[0], list(sample_info.values())[0]
-        )
-
-    def _flush_to_append(self, sample_id: str, title: str):
-        if sample_id in self._samples:
-            return
-        self._samples[sample_id] = title
-        TEXT_TO_APPEND: Final[str] = f'\n{sample_id} = "{title}"'
-        with open(BaseHandler.SAMPLE_PATH, mode="a", encoding="utf-8") as f:
-            f.write(TEXT_TO_APPEND)
+        """Sync DB from metadata.xlsx"""
+        sample_keys = self._excel_handler.get_all_keys("samples")
+        for sample_id in sample_keys:
+            self.add(sample_id, force_search=force_research)
 
 
 THandler = TypeVar("THandler", bound=BaseHandler)

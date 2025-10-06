@@ -1,16 +1,22 @@
 import argparse
 import datetime
+import json
 import logging
 import os
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Union
 
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+import questionary
 import scanpy as sc
 import scvi
+import seaborn as sns
 import toml
 from rich.console import Console
+from rich.table import Table
 
 from celline.config import Setting
 from celline.functions._base import CellineFunction
@@ -38,6 +44,8 @@ class PredictTrajectory(CellineFunction):
         n_pcs: int = 50,
         n_features: int = 2000,
         latent_dims: str = "1:10",
+        root_cluster: str | None = None,
+        interactive: bool = False,
         force_rerun: bool = False,
         verbose: bool = True,
         output_dir: str | None = None,
@@ -62,6 +70,10 @@ class PredictTrajectory(CellineFunction):
             Number of variable features for single mode.
         latent_dims : str, default="1:10"
             Latent dimensions to use for integration mode (R-style range).
+        root_cluster : Optional[str], default=None
+            Manually specify root cluster (e.g., '0', '3'). Skips automatic root detection.
+        interactive : bool, default=False
+            Interactive mode: show cluster info and prompt for root cluster selection.
         force_rerun : bool, default=False
             Whether to force rerun even if cached results exist.
         verbose : bool, default=True
@@ -82,6 +94,8 @@ class PredictTrajectory(CellineFunction):
         self.n_pcs = n_pcs
         self.n_features = n_features
         self.latent_dims = latent_dims
+        self.root_cluster = root_cluster
+        self.interactive = interactive
         self.force_rerun = force_rerun
         self.verbose = verbose
         self.no_rds = no_rds
@@ -95,7 +109,6 @@ class PredictTrajectory(CellineFunction):
         self.r_script_integrated = None
         self.r_script_single = None
         # Note: self.markers_file is already set above, don't overwrite it
-        self.root_markers_file = None
         self.cell_cycle_markers_file = None
 
         # File validation will be done in call() method
@@ -148,7 +161,6 @@ class PredictTrajectory(CellineFunction):
             self.r_script_integrated,
             self.r_script_single,
             self.markers_file,
-            self.root_markers_file,
             self.cell_cycle_markers_file,
         ]
 
@@ -233,14 +245,12 @@ class PredictTrajectory(CellineFunction):
             user_markers_file = Path(self.markers_file).resolve()
             console.print(f"[green]Using user-specified markers file: {user_markers_file}[/green]")
             self.markers_file = user_markers_file
-            # Use default celline library paths for other marker files
-            self.root_markers_file = celline_root / "data" / "markers" / "__root_markers.tsv"
+            # Use default celline library path for cell cycle markers
             self.cell_cycle_markers_file = celline_root / "data" / "markers" / "__cell_cycle_markers.tsv"
         else:
             # Default celline library paths for all markers
             console.print("[yellow]Using default celline markers files[/yellow]")
             self.markers_file = celline_root / "data" / "markers" / "__markers.tsv"
-            self.root_markers_file = celline_root / "data" / "markers" / "__root_markers.tsv"
             self.cell_cycle_markers_file = celline_root / "data" / "markers" / "__cell_cycle_markers.tsv"
 
         # Validate required files exist
@@ -565,6 +575,266 @@ class PredictTrajectory(CellineFunction):
 
         return sample_paths
 
+    def _run_interactive_mode(self, input_file: Path, project: "Project") -> str:
+        """Run interactive mode to select root cluster.
+
+        Parameters
+        ----------
+        input_file : Path
+            Path to preprocessed H5AD file
+        project : Project
+            Celline project object
+
+        Returns
+        -------
+        str
+            Selected root cluster ID
+        """
+        console.print("\n[bold cyan]🔬 Interactive Mode: Root Cluster Selection[/bold cyan]\n")
+        console.print("[yellow]Running preliminary analysis...[/yellow]")
+
+        # Load data
+        adata = sc.read_h5ad(input_file)
+
+        # Cell cycle scoring
+        console.print("[blue]Computing cell cycle scores...[/blue]")
+        cell_cycle_genes = self._load_cell_cycle_genes()
+        s_genes = [g for g in cell_cycle_genes if g.startswith("S_")]
+        g2m_genes = [g for g in cell_cycle_genes if g.startswith("G2M_")]
+
+        # Convert gene names to match dataset
+        s_genes_found = [g for g in s_genes if g.replace("S_", "") in adata.var_names]
+        g2m_genes_found = [g for g in g2m_genes if g.replace("G2M_", "") in adata.var_names]
+
+        if len(s_genes_found) > 0 and len(g2m_genes_found) > 0:
+            sc.tl.score_genes_cell_cycle(
+                adata,
+                s_genes=[g.replace("S_", "") for g in s_genes_found],
+                g2m_genes=[g.replace("G2M_", "") for g in g2m_genes_found]
+            )
+        else:
+            console.print("[yellow]Warning: Could not find enough cell cycle genes, using defaults[/yellow]")
+            adata.obs["S_score"] = 0
+            adata.obs["G2M_score"] = 0
+            adata.obs["phase"] = "Unknown"
+
+        # Clustering
+        console.print(f"[blue]Running clustering (resolution={self.resolution})...[/blue]")
+
+        if self.integrate_mode:
+            # Use latent space for integrated mode
+            if "X_scvi" in adata.obsm:
+                latent_key = "X_scvi"
+            elif "latent" in adata.obsm:
+                latent_key = "latent"
+            else:
+                raise ValueError("No latent embedding found. Run integration first.")
+
+            sc.pp.neighbors(adata, use_rep=latent_key, n_neighbors=15, random_state=Config.DEFAULT_SEED)
+        else:
+            # Use PCA for single mode
+            if "X_pca" not in adata.obsm:
+                sc.pp.pca(adata, n_comps=min(50, adata.n_obs - 1, adata.n_vars - 1), random_state=Config.DEFAULT_SEED)
+            sc.pp.neighbors(adata, n_neighbors=15, n_pcs=min(30, adata.obsm["X_pca"].shape[1]), random_state=Config.DEFAULT_SEED)
+
+        sc.tl.leiden(adata, resolution=self.resolution, key_added="clusters", random_state=Config.DEFAULT_SEED)
+
+        # UMAP for visualization
+        console.print("[blue]Computing UMAP...[/blue]")
+        sc.tl.umap(adata, random_state=Config.DEFAULT_SEED)
+
+        # Calculate cluster statistics
+        cluster_stats = self._calculate_cluster_stats(adata)
+
+        # Display cluster information
+        self._display_cluster_info(cluster_stats)
+
+        # Generate and save visualization
+        viz_path = self.output_dir / "interactive_cluster_preview.png"
+        self._generate_cluster_visualization(adata, viz_path)
+        console.print(f"[green]📊 Visualization saved to: {viz_path}[/green]\n")
+
+        # Interactive prompt
+        selected_cluster = self._prompt_cluster_selection(cluster_stats)
+
+        console.print(f"\n[bold green]✓ Selected root cluster: {selected_cluster}[/bold green]\n")
+
+        return selected_cluster
+
+    def _load_cell_cycle_genes(self) -> list[str]:
+        """Load cell cycle genes from marker file."""
+        try:
+            df = pd.read_csv(self.cell_cycle_markers_file, sep="\t")
+            return df["gene"].tolist()
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not load cell cycle genes from {self.cell_cycle_markers_file}: {e}[/yellow]")
+            console.print("[yellow]Using built-in Seurat gene list as fallback[/yellow]")
+            # Fallback to Seurat's built-in cc.genes.updated.2019
+            # Minimal essential genes for S and G2M phases
+            return [
+                # S phase markers (prefix with S_)
+                "S_MCM5", "S_PCNA", "S_TYMS", "S_FEN1", "S_MCM2",
+                # G2M phase markers (prefix with G2M_)
+                "G2M_HMGB2", "G2M_CDK1", "G2M_NUSAP1", "G2M_UBE2C", "G2M_BIRC5"
+            ]
+
+    def _calculate_cluster_stats(self, adata) -> pd.DataFrame:
+        """Calculate statistics for each cluster.
+
+        Parameters
+        ----------
+        adata : AnnData
+            Annotated data object with clustering results
+
+        Returns
+        -------
+        pd.DataFrame
+            Cluster statistics table
+        """
+        cluster_col = "clusters"
+
+        stats = []
+        # Sort clusters (handle both numeric and string cluster IDs)
+        try:
+            cluster_list = sorted(adata.obs[cluster_col].unique(), key=lambda x: int(x))
+        except (ValueError, TypeError):
+            cluster_list = sorted(adata.obs[cluster_col].unique(), key=str)
+
+        for cluster in cluster_list:
+            mask = adata.obs[cluster_col] == cluster
+            cluster_cells = adata[mask]
+
+            n_cells = mask.sum()
+
+            # Cell cycle scores (handle both score and Score capitalization)
+            if "S_score" in adata.obs.columns:
+                mean_s = cluster_cells.obs["S_score"].mean()
+                mean_g2m = cluster_cells.obs["G2M_score"].mean()
+            elif "S.Score" in adata.obs.columns:
+                mean_s = cluster_cells.obs["S.Score"].mean()
+                mean_g2m = cluster_cells.obs["G2M.Score"].mean()
+            else:
+                mean_s = 0
+                mean_g2m = 0
+
+            cycle_score = mean_s + mean_g2m
+
+            stats.append({
+                "Cluster": cluster,
+                "N_Cells": n_cells,
+                "Pct_Total": f"{100 * n_cells / adata.n_obs:.1f}%",
+                "S_Score": f"{mean_s:.3f}",
+                "G2M_Score": f"{mean_g2m:.3f}",
+                "Cycle_Score": f"{cycle_score:.3f}",
+                "Cycle_Rank": 0  # Will be filled below
+            })
+
+        df = pd.DataFrame(stats)
+
+        # Rank by cycle score (higher = more proliferative = more progenitor-like)
+        df["Cycle_Rank"] = df["Cycle_Score"].astype(float).rank(ascending=False).astype(int)
+
+        return df.sort_values("Cycle_Rank")
+
+    def _display_cluster_info(self, cluster_stats: pd.DataFrame) -> None:
+        """Display cluster information as a formatted table.
+
+        Parameters
+        ----------
+        cluster_stats : pd.DataFrame
+            Cluster statistics
+        """
+        table = Table(title="Cluster Statistics (Ranked by Cell Cycle Score)", show_header=True, header_style="bold magenta")
+
+        for col in cluster_stats.columns:
+            table.add_column(col)
+
+        for _, row in cluster_stats.iterrows():
+            table.add_row(*[str(val) for val in row.values])
+
+        console.print(table)
+        console.print("\n[dim]💡 Tip: Clusters with higher cell cycle scores are typically more progenitor-like[/dim]\n")
+
+    def _generate_cluster_visualization(self, adata, output_path: Path) -> None:
+        """Generate UMAP visualization with cluster and cell cycle information.
+
+        Parameters
+        ----------
+        adata : AnnData
+            Annotated data object
+        output_path : Path
+            Path to save the figure
+        """
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+        # Plot 1: Clusters
+        sc.pl.umap(adata, color="clusters", title="Clusters", ax=axes[0], show=False, legend_loc="on data")
+
+        # Plot 2: Cell cycle phase
+        if "phase" in adata.obs.columns:
+            sc.pl.umap(adata, color="phase", title="Cell Cycle Phase", ax=axes[1], show=False)
+        else:
+            axes[1].text(0.5, 0.5, "Cell cycle phase not available", ha="center", va="center")
+            axes[1].axis("off")
+
+        # Plot 3: Combined cell cycle score
+        if "S_score" in adata.obs.columns:
+            adata.obs["cycle_combined"] = adata.obs["S_score"] + adata.obs["G2M_score"]
+            sc.pl.umap(adata, color="cycle_combined", title="Cell Cycle Score (S+G2M)",
+                      ax=axes[2], show=False, cmap="RdYlGn")
+        elif "S.Score" in adata.obs.columns:
+            adata.obs["cycle_combined"] = adata.obs["S.Score"] + adata.obs["G2M.Score"]
+            sc.pl.umap(adata, color="cycle_combined", title="Cell Cycle Score (S+G2M)",
+                      ax=axes[2], show=False, cmap="RdYlGn")
+        else:
+            axes[2].text(0.5, 0.5, "Cell cycle scores not available", ha="center", va="center")
+            axes[2].axis("off")
+
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+        plt.close()
+
+    def _prompt_cluster_selection(self, cluster_stats: pd.DataFrame) -> str:
+        """Prompt user to select root cluster interactively.
+
+        Parameters
+        ----------
+        cluster_stats : pd.DataFrame
+            Cluster statistics
+
+        Returns
+        -------
+        str
+            Selected cluster ID
+        """
+        # Create choices with informative labels
+        choices = []
+        for _, row in cluster_stats.iterrows():
+            label = (f"Cluster {row['Cluster']} "
+                    f"(n={row['N_Cells']}, "
+                    f"cycle={row['Cycle_Score']}, "
+                    f"rank={row['Cycle_Rank']})")
+            choices.append(questionary.Choice(title=label, value=str(row['Cluster'])))
+
+        # Add option to use auto-selection
+        choices.append(questionary.Choice(
+            title="[Auto] Use highest cell cycle score (recommended)",
+            value="__auto__"
+        ))
+
+        selected = questionary.select(
+            "Select root cluster for trajectory analysis:",
+            choices=choices
+        ).ask()
+
+        if selected == "__auto__":
+            # Use top-ranked cluster
+            auto_cluster = str(cluster_stats.iloc[0]["Cluster"])
+            console.print(f"[yellow]Auto-selected cluster: {auto_cluster}[/yellow]")
+            return auto_cluster
+
+        return selected
+
     def _run_trajectory_analysis(self, input_paths: list[Path] | Path, target_samples: list[str], project: "Project") -> None:
         """Run R-based trajectory analysis."""
         if self.integrate_mode:
@@ -627,6 +897,11 @@ class PredictTrajectory(CellineFunction):
             console.print("[yellow]Using original integrated file[/yellow]")
             preprocessed_file = integrated_file
 
+        # Interactive mode: let user select root cluster
+        root_cluster_to_use = self.root_cluster
+        if self.interactive and root_cluster_to_use is None:
+            root_cluster_to_use = self._run_interactive_mode(preprocessed_file, project)
+
         # Create sample ID string for R
         sample_ids = ",".join(target_samples)
 
@@ -644,11 +919,12 @@ class PredictTrajectory(CellineFunction):
             self.latent_dims,
             "--cell_cycle_tsv",
             str(self.cell_cycle_markers_file),
-            "--root_marker_tsv",
-            str(self.root_markers_file),
             "--canonical_marker_tsv",
             str(self.markers_file),
         ]
+
+        if root_cluster_to_use is not None:
+            r_args.extend(["--root_cluster", str(root_cluster_to_use)])
 
         if self.force_rerun:
             r_args.extend(["--force_rerun", "TRUE"])
@@ -800,6 +1076,12 @@ class PredictTrajectory(CellineFunction):
                 console.print("[yellow]Using original sample file[/yellow]")
                 preprocessed_file = sample_path
 
+            # Interactive mode: let user select root cluster (per sample)
+            root_cluster_to_use = self.root_cluster
+            if self.interactive and root_cluster_to_use is None:
+                console.print(f"\n[bold]Sample: {sample_id}[/bold]")
+                root_cluster_to_use = self._run_interactive_mode(preprocessed_file, project)
+
             # Create sample-specific output directory
             sample_output_dir = self.output_dir / sample_id
             sample_output_dir.mkdir(parents=True, exist_ok=True)
@@ -820,11 +1102,12 @@ class PredictTrajectory(CellineFunction):
                 str(self.n_features),
                 "--cell_cycle_tsv",
                 str(self.cell_cycle_markers_file),
-                "--root_marker_tsv",
-                str(self.root_markers_file),
                 "--canonical_marker_tsv",
                 str(self.markers_file),
             ]
+
+            if root_cluster_to_use is not None:
+                r_args.extend(["--root_cluster", str(root_cluster_to_use)])
 
             if self.force_rerun:
                 r_args.extend(["--force_rerun", "TRUE"])
@@ -869,6 +1152,14 @@ class PredictTrajectory(CellineFunction):
         """
         try:
             console.print("[bold blue]🔄 Starting Trajectory Analysis[/bold blue]")
+
+            # Validate argument combinations
+            if self.interactive and self.root_cluster is not None:
+                raise ValueError(
+                    "Cannot use both --interactive and --root-cluster. "
+                    "Interactive mode allows you to select the root cluster, "
+                    "so specifying --root-cluster is redundant."
+                )
 
             # Setup paths using project information
             self._setup_paths(project)
@@ -945,6 +1236,7 @@ class PredictTrajectory(CellineFunction):
         n_pcs = getattr(args, "n_pcs", None) or getattr(args, "n-pcs", None)
         n_features = getattr(args, "n_features", None) or getattr(args, "n-features", None)
         latent_dims = getattr(args, "latent_dims", None) or getattr(args, "latent-dims", None)
+        root_cluster = getattr(args, "root_cluster", None) or getattr(args, "root-cluster", None)
         force_rerun = getattr(args, "force_rerun", False) or getattr(args, "force-rerun", False)
         output_dir = getattr(args, "output_dir", None) or getattr(args, "output-dir", None)
         markers_file = getattr(args, "markers", None)
@@ -958,6 +1250,8 @@ class PredictTrajectory(CellineFunction):
             n_pcs=n_pcs if n_pcs is not None else 50,
             n_features=n_features if n_features is not None else 2000,
             latent_dims=latent_dims if latent_dims is not None else "1:10",
+            root_cluster=root_cluster,
+            interactive=getattr(args, "interactive", False),
             force_rerun=force_rerun,
             output_dir=output_dir,
             verbose=getattr(args, "verbose", True),
@@ -975,6 +1269,8 @@ class PredictTrajectory(CellineFunction):
         parser.add_argument("--n-pcs", type=int, default=50, help="Number of PCA components for single mode (default: 50)")
         parser.add_argument("--n-features", type=int, default=2000, help="Number of variable features for single mode (default: 2000)")
         parser.add_argument("--latent-dims", type=str, default="1:10", help="Latent dimensions for integration mode (R-style range, default: '1:10')")
+        parser.add_argument("--root-cluster", type=str, help="Manually specify root cluster (e.g., '0', '3'). Skips automatic root cluster detection.")
+        parser.add_argument("--interactive", action="store_true", help="Interactive mode: show cluster info and prompt for root cluster selection")
         parser.add_argument("--force-rerun", action="store_true", help="Force rerun even if cached results exist")
         parser.add_argument("--no-rds", action="store_true", help="Skip saving RDS files (sce.rds, seurat.rds) for faster processing")
         parser.add_argument("--output-dir", type=str, help="Custom output directory (default: auto-generated)")
@@ -987,11 +1283,12 @@ class PredictTrajectory(CellineFunction):
     def get_usage_examples(self) -> list[str]:
         """Return usage examples."""
         return [
-            "celline run predict_trajectory",
-            "celline run predict_trajectory --integrate",
-            "celline run predict_trajectory --samples sample1 sample2",
-            "celline run predict_trajectory --integrate --projects GSE123456",
-            "celline run predict_trajectory --resolution 0.3 --n-pcs 30",
+            "celline run predict_trajectory --markers markers.tsv",
+            "celline run predict_trajectory --markers markers.tsv --integrate",
+            "celline run predict_trajectory --markers markers.tsv --interactive",
+            "celline run predict_trajectory --markers markers.tsv --root-cluster 0",
+            "celline run predict_trajectory --markers markers.tsv --integrate --interactive",
+            "celline run predict_trajectory --markers markers.tsv --samples sample1 sample2",
         ]
 
 

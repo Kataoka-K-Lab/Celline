@@ -1,0 +1,18 @@
+[project]
+name = "default"
+version = "0.01"
+
+[fetch]
+wait_time = 4
+
+[R]
+r_path = ""
+
+[execution]
+system = "multithreading"
+nthread = 1
+pbs_server = ""
+
+[custom_functions]
+directory = "functions"
+enabled = true

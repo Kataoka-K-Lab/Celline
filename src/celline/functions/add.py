@@ -27,16 +27,21 @@ class Add(CellineFunction):
         id: str
         title: Optional[str] = ""
 
-    def __init__(self, sample_id: Union[list[SampleInfo], pl.DataFrame]) -> None:
+    def __init__(self, sample_id: Union[list[SampleInfo], pl.DataFrame], use_ai: bool = False, ai_provider: str = "auto") -> None:
         """#### Add accession ID to DB & your project.
 
         #### Note: Parallel calculations are not supported
 
         Args:
             sample_id (<List[Add.SampleInfo]> | <pl.DataFrame>): Accession ID to add.
+            use_ai (bool): Enable AI metadata extraction (default: False)
+            ai_provider (str): AI provider to use ("openai", "claude", or "auto")
 
         """
         self.add_target_id: list[Add.SampleInfo] = []
+        self.use_ai = use_ai
+        self.ai_provider = ai_provider
+
         if isinstance(sample_id, pl.DataFrame):
             if not all(column in sample_id.columns for column in ["id", "title"]):
                 raise KeyError(
@@ -52,38 +57,20 @@ class Add(CellineFunction):
         else:
             raise ValueError("Add target id should be `list[Add.SampleInfo]` or `polars.DataFrame`")  # noqa: TRY004
 
-    def get_samples(self) -> dict[str, str]:
+    def get_samples(self) -> dict[str, dict[str, str]]:
         """Get sample information from samples.toml file.
 
         Returns:
-            Dict[str, str]: Samples information.
+            Dict[str, Dict[str, str]]: Samples information.
 
         """
         sample_info_file = f"{Config.PROJ_ROOT}/samples.toml"
-        samples: dict[str, str] = {}
+        samples: dict[str, dict[str, str]] = {}
         if os.path.isfile(sample_info_file):
             with open(sample_info_file, encoding="utf-8") as f:
-                samples = toml.load(f)
+                all_data = toml.load(f)
+                samples = all_data.get("samples", {})
         return samples
-
-    def __add_gsm_accession_proj(self, sample_id: str, sample_name: str) -> None:
-        """Add GSM accession ID and sample name to the samples.toml file.
-
-        Args:
-            sample_id (str): GSM accession ID.
-            sample_name (str): Sample name.
-
-        """
-        sample_info_file = f"{Config.PROJ_ROOT}/samples.toml"
-        samples: dict[str, str] = {}
-        if os.path.isfile(sample_info_file):
-            with open(sample_info_file, encoding="utf-8") as f:
-                samples = toml.load(f)
-        if sample_id in samples:
-            return
-        samples[sample_id] = sample_name
-        with open(sample_info_file, mode="w", encoding="utf-8") as f:
-            toml.dump(samples, f)
 
     def call(self, project: "Project") -> "Project":
         """Call the function to add accession IDs to the project.
@@ -96,25 +83,67 @@ class Add(CellineFunction):
 
         """
         logger.info(f"Starting to add {len(self.add_target_id)} sample(s) to project")
-        
-        for i, tid in enumerate(track(self.add_target_id, description="Adding..."), 1):
-            logger.info(f"Processing sample {i}/{len(self.add_target_id)}: {tid.id}")
-            console.print(f"[cyan]Processing {tid.id} ({i}/{len(self.add_target_id)})[/cyan]")
-            
-            try:
-                resolver = HandleResolver.resolve(tid.id)
-                if resolver is not None:
+
+        # Pre-check: Determine if any IDs need interactive custom data entry
+        needs_interactive = []
+        standard_ids = []
+
+        for tid in self.add_target_id:
+            resolver = HandleResolver.resolve(tid.id)
+            if resolver is None:
+                needs_interactive.append(tid)
+            else:
+                standard_ids.append((tid, resolver))
+
+        # Process standard IDs with progress bar
+        if standard_ids:
+            for i, (tid, resolver) in enumerate(track(standard_ids, description="Adding standard samples..."), 1):
+                logger.info(f"Processing sample {i}/{len(standard_ids)}: {tid.id}")
+                console.print(f"[cyan]Processing {tid.id} ({i}/{len(standard_ids)})[/cyan]")
+
+                try:
                     logger.info(f"Resolver found for {tid.id}, starting to add to database")
+
+                    # Configure AI settings on resolver if enabled
+                    if self.use_ai:
+                        resolver._use_ai = True
+                        resolver._ai_provider = self.ai_provider
+                        if i == 1:  # Only show message once
+                            console.print(f"[cyan]🤖 AI metadata extraction enabled (provider: {self.ai_provider})[/cyan]")
+
                     resolver.add(tid.id)
                     logger.info(f"Successfully added {tid.id} to database")
                     console.print(f"[green]✓ Successfully added {tid.id}[/green]")
-                else:
-                    logger.warning(f"No resolver found for {tid.id}")
-                    console.print(f"[yellow]⚠ No resolver found for {tid.id}[/yellow]")
-            except Exception as e:
-                logger.error(f"Failed to add {tid.id}: {str(e)}")
-                console.print(f"[red]✗ Failed to add {tid.id}: {str(e)}[/red]")
-                raise
+                except Exception as e:
+                    logger.error(f"Failed to add {tid.id}: {str(e)}")
+                    console.print(f"[red]✗ Failed to add {tid.id}: {str(e)}[/red]")
+                    raise
+
+        # Process custom IDs interactively (without progress bar)
+        if needs_interactive:
+            console.print(f"\n[yellow]Found {len(needs_interactive)} sample(s) requiring custom data entry[/yellow]\n")
+
+            for i, tid in enumerate(needs_interactive, 1):
+                logger.warning(f"No resolver found for {tid.id}, trying custom data handler")
+                console.print(f"[cyan]Custom data entry ({i}/{len(needs_interactive)})[/cyan]")
+
+                try:
+                    # Fallback to custom data handler (interactive)
+                    from celline.DB.handler_custom import CustomDataHandler
+                    custom_handler = CustomDataHandler()
+                    custom_handler.add_interactive(tid.id)
+
+                    logger.info(f"Successfully added custom data {tid.id}")
+                    console.print(f"[green]✓ Successfully added custom data {tid.id}[/green]\n")
+                except KeyboardInterrupt:
+                    logger.warning(f"User cancelled custom data entry for {tid.id}")
+                    console.print(f"\n[yellow]⚠ Skipping {tid.id} (cancelled by user)[/yellow]\n")
+                    # Continue with next sample instead of raising
+                    continue
+                except Exception as e:
+                    logger.error(f"Failed to add custom data {tid.id}: {str(e)}")
+                    console.print(f"[red]✗ Failed to add custom data {tid.id}: {str(e)}[/red]")
+                    raise
         # cnt = 0
         # for sample in tqdm.tqdm(self.add_target_id):
         #     if sample.id_name.startswith("GSE"):
@@ -163,8 +192,8 @@ class Add(CellineFunction):
     def add_cli_args(self, parser: argparse.ArgumentParser) -> None:
         """Add CLI arguments for the Add function."""
         parser.add_argument(
-            'sample_ids', 
-            nargs='+', 
+            'sample_ids',
+            nargs='+',
             help='Sample IDs to add (e.g., GSE123456 GSM789012)'
         )
         parser.add_argument(
@@ -174,6 +203,17 @@ class Add(CellineFunction):
         parser.add_argument(
             '--from-file', '-f',
             help='Read sample IDs from a file (one per line or CSV/TSV format)'
+        )
+        parser.add_argument(
+            '--ai',
+            action='store_true',
+            help='Enable AI metadata extraction from web pages (requires API key in .env)'
+        )
+        parser.add_argument(
+            '--ai-provider',
+            choices=['openai', 'claude', 'auto'],
+            default='auto',
+            help='AI provider to use for metadata extraction (default: auto)'
         )
 
     def cli(self, project: "Project", args: Optional[argparse.Namespace] = None) -> "Project":
@@ -227,9 +267,12 @@ class Add(CellineFunction):
             return project
 
         console.print(f"[cyan]Adding {len(sample_infos)} sample(s)...[/cyan]")
-        
-        # Create Add instance with the sample infos and call it
-        add_instance = Add(sample_infos)
+
+        # Create Add instance with the sample infos and AI settings
+        use_ai = getattr(args, 'ai', False)
+        ai_provider = getattr(args, 'ai_provider', 'auto')
+
+        add_instance = Add(sample_infos, use_ai=use_ai, ai_provider=ai_provider)
         return add_instance.call(project)
 
     def get_description(self) -> str:

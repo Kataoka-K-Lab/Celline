@@ -148,15 +148,17 @@ async def get_project_info():
         if os.path.exists(samples_file):
             try:
                 with open(samples_file, 'r') as f:
-                    samples_data = toml.load(f)
+                    all_data = toml.load(f)
+                    samples_data = all_data.get("samples", {})
             except Exception as e:
                 # Log error but continue - samples.toml might be empty
                 print(f"Warning: Error reading samples.toml: {e}")
                 samples_data = {}
-        
+
         # Get sample statuses by checking directory structure
         samples = []
-        for sample_id, sample_name in samples_data.items():
+        for sample_id, sample_meta in samples_data.items():
+            sample_name = sample_meta.get("title", sample_id) if isinstance(sample_meta, dict) else sample_id
             sample_path = os.path.join(project_path, "resources", sample_id)
             data_path = os.path.join(project_path, "data", sample_id)
             
@@ -168,10 +170,11 @@ async def get_project_info():
                 status = "processing"
             elif os.path.exists(os.path.join(sample_path, "raw")):
                 status = "downloaded"
-                
+
+
             samples.append(SampleInfo(
                 id=sample_id,
-                title=sample_name if isinstance(sample_name, str) else sample_id,
+                title=sample_name,
                 status=status,
                 addedAt=datetime.now()  # TODO: get actual creation time
             ))

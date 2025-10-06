@@ -449,22 +449,29 @@ class Preprocess(CellineFunction):
             If a sample's parent information is missing.
 
         """
-        sample_info_file = f"{Config.PROJ_ROOT}/samples.toml"
-        if not os.path.isfile(sample_info_file):
-            print("sample.toml could not be found. Skipping.")
+        from celline.DB.dev.excel_handler import ExcelMetadataHandler
+
+        if Config.current in Config.runnings:
+            excel_path = f"{Config.runnings[Config.current].PROJ_ROOT}/metadata.xlsx"
+        else:
+            raise RuntimeError("Config not initialized")
+
+        if not os.path.isfile(excel_path):
+            print("metadata.xlsx could not be found. Skipping.")
             return project
-        with open(sample_info_file, encoding="utf-8") as f:
-            samples: dict[str, str] = toml.load(f)
-            for sample_id in samples:
-                resolver = HandleResolver.resolve(sample_id)
-                if resolver is None:
-                    raise ReferenceError(f"Could not resolve target sample id: {sample_id}")
-                sample_schema: SampleSchema = resolver.sample.search(sample_id)
-                if sample_schema.parent is None:
-                    raise KeyError("Could not find parent")
-                path = Path(sample_schema.parent, sample_id)
-                path.prepare()
-                if path.is_counted:
+
+        excel_handler = ExcelMetadataHandler(excel_path)
+        samples_keys = excel_handler.get_all_keys("samples")
+        for sample_id in samples_keys:
+            resolver = HandleResolver.resolve(sample_id)
+            if resolver is None:
+                raise ReferenceError(f"Could not resolve target sample id: {sample_id}")
+            sample_schema: SampleSchema = resolver.sample.search(sample_id)
+            if sample_schema.parent is None:
+                raise KeyError("Could not find parent")
+            path = Path(sample_schema.parent, sample_id)
+            path.prepare()
+            if path.is_counted:
                     console.print(f"[dim]Processing sample {sample_id}...[/dim]")
 
                     # Check if cell_info.tsv already exists
@@ -623,19 +630,19 @@ class Preprocess(CellineFunction):
 
                         # 5) PCA
                         console.print("[dim]Computing PCA...[/dim]")
-                        sc.tl.pca(adata_processed, svd_solver="arpack")
+                        sc.tl.pca(adata_processed, svd_solver="arpack", random_state=Config.DEFAULT_SEED)
 
                         # 6) Neighbors
                         console.print("[dim]Building neighbor graph (n_pcs=40, n_neighbors=15)...[/dim]")
-                        sc.pp.neighbors(adata_processed, n_pcs=40, n_neighbors=15)
+                        sc.pp.neighbors(adata_processed, n_pcs=40, n_neighbors=15, random_state=Config.DEFAULT_SEED)
 
                         # 7) UMAP
                         console.print("[dim]Computing UMAP embedding...[/dim]")
-                        sc.tl.umap(adata_processed)
+                        sc.tl.umap(adata_processed, random_state=Config.DEFAULT_SEED)
 
                         # 8) Leiden clustering
                         console.print("[dim]Performing Leiden clustering (resolution=1.0)...[/dim]")
-                        sc.tl.leiden(adata_processed, resolution=1.0)
+                        sc.tl.leiden(adata_processed, resolution=1.0, random_state=Config.DEFAULT_SEED)
                         n_clusters = len(adata_processed.obs["leiden"].unique())
                         console.print(f"[dim]Identified {n_clusters} clusters[/dim]")
 
@@ -702,9 +709,9 @@ class Preprocess(CellineFunction):
                     remaining_cells = obs.filter(pl.col("include")).height
                     console.print(f"[green]✓ Sample {sample_id}: {remaining_cells}/{total_cells} cells passed filtering ({100 * remaining_cells / total_cells:.1f}%)[/green]")
 
-                else:
-                    console.print(f"[red]✗ Sample {sample_id}: Count data not found. Expected file: {path.resources_sample_counted}/outs/filtered_feature_bc_matrix.h5[/red]")
-                    console.print("[dim]Please run the counting pipeline (e.g., Cell Ranger) first.[/dim]")
+            else:
+                console.print(f"[red]✗ Sample {sample_id}: Count data not found. Expected file: {path.resources_sample_counted}/outs/filtered_feature_bc_matrix.h5[/red]")
+                console.print("[dim]Please run the counting pipeline (e.g., Cell Ranger) first.[/dim]")
 
     def add_cli_args(self, parser: argparse.ArgumentParser) -> None:
         """Add CLI arguments for the Preprocess function."""

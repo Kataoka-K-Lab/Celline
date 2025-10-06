@@ -3,10 +3,10 @@ import os
 from typing import Dict, Final
 
 import rich
-import toml
 
 from celline.DB.dev.handler import HandleResolver
 from celline.DB.dev.model import SampleSchema
+from celline.DB.dev.excel_handler import ExcelMetadataHandler
 from celline.config import Config
 from celline.utils.path import Path
 
@@ -24,11 +24,16 @@ class SampleResolver:
     @classmethod
     @property
     def samples(cls) -> Dict[str, SampleInfo]:
-        SAMPLE_PATH: Final[str] = f"{Config.PROJ_ROOT}/samples.toml"
-        if not cls.__called and os.path.isfile(SAMPLE_PATH):
-            with open(SAMPLE_PATH, mode="r", encoding="utf-8") as f:
-                __samples = toml.load(f)
-            for sample_id in __samples:
+        if Config.current in Config.runnings:
+            EXCEL_PATH: Final[str] = f"{Config.runnings[Config.current].PROJ_ROOT}/metadata.xlsx"
+        else:
+            raise RuntimeError("Config not initialized")
+
+        if not cls.__called and os.path.isfile(EXCEL_PATH):
+            excel_handler = ExcelMetadataHandler(EXCEL_PATH)
+            sample_keys = excel_handler.get_all_keys("samples")
+
+            for sample_id in sample_keys:
                 __resolver = HandleResolver.resolve(sample_id)
                 if __resolver is None:
                     rich.print(

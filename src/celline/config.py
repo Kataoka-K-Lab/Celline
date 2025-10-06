@@ -11,13 +11,24 @@ class Config:
     """[Static] Running execution"""
     current: str = ""
     """[Static] Current execution"""
-    ## objective ##
-    EXEC_ROOT: Final[str] = os.path.dirname(os.path.dirname(__file__))
-    PROJ_ROOT: Final[str]
+    ## class-level variables (for backward compatibility) ##
+    EXEC_ROOT: str = os.path.dirname(os.path.dirname(__file__))
+    PROJ_ROOT: str = ""
+
+    ## Reproducibility settings ##
+    DEFAULT_SEED: Final[int] = 42
+    """Default random seed for reproducibility across all analyses"""
 
     def __init__(self, project_root_path: str) -> None:
-        # self.EXEC_ROOT = os.path.dirname(os.path.dirname(__file__))
+        # Instance variables
+        self.EXEC_ROOT = os.path.dirname(os.path.dirname(__file__))
         self.PROJ_ROOT = project_root_path
+
+        # Set class-level variables for backward compatibility
+        Config.EXEC_ROOT = self.EXEC_ROOT
+        Config.PROJ_ROOT = self.PROJ_ROOT
+
+        # Register this instance
         Config.current = f"{self.EXEC_ROOT}+{self.PROJ_ROOT}"
         if Config.current not in Config.runnings:
             Config.runnings[Config.current] = self

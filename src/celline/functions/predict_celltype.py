@@ -168,14 +168,15 @@ def predict_celltype_with_annotation(sample_info, marker_path: str | None = None
     adata = adata[adata.obs["include"]]
     adata.var_names_make_unique()
 
+    from celline.config import Config
     sc.pp.highly_variable_genes(adata, flavor="seurat_v3", n_top_genes=2000, subset=True)
     sc.pp.normalize_total(adata, target_sum=1e4)
     sc.pp.log1p(adata)
     sc.pp.scale(adata, max_value=10)
-    sc.tl.pca(adata, svd_solver="arpack")
-    sc.pp.neighbors(adata, n_pcs=40, n_neighbors=15)
-    sc.tl.umap(adata)
-    sc.tl.leiden(adata, resolution=1.0)
+    sc.tl.pca(adata, svd_solver="arpack", random_state=Config.DEFAULT_SEED)
+    sc.pp.neighbors(adata, n_pcs=40, n_neighbors=15, random_state=Config.DEFAULT_SEED)
+    sc.tl.umap(adata, random_state=Config.DEFAULT_SEED)
+    sc.tl.leiden(adata, resolution=1.0, random_state=Config.DEFAULT_SEED)
 
     # Basic leiden clustering plot
     sc.pl.umap(adata, color=["leiden"], frameon=False, legend_loc="on data", save=f"{sample_id}_leiden_clusters.png", show=False)

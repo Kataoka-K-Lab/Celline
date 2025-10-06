@@ -42,8 +42,6 @@ load_libraries <- function() {
 
 # ─────────────────── 1. Input & required‑gene validation ───────────────────
 read_inputs_single <- function(h5ad_path_or_list,
-                               progenitor_markers,
-                               differentiation_markers,
                                marker_file) {
 
   # Validate marker file exists
@@ -85,17 +83,15 @@ read_inputs_single <- function(h5ad_path_or_list,
     }
   }
 
-  # Build required gene list
+  # Build required gene list: only cell cycle + canonical markers
+  # Tissue-specific markers (progenitor/differentiation) are no longer used
   data("cc.genes.updated.2019", package = "Seurat")
   cell_cycle_genes <- unlist(cc.genes.updated.2019)
 
   mst_markers <- readr::read_tsv(marker_file,
                                  show_col_types = FALSE)$gene
 
-  required_genes <- union(cell_cycle_genes,
-                    union(progenitor_markers,
-                    union(differentiation_markers,
-                          mst_markers)))
+  required_genes <- union(cell_cycle_genes, mst_markers)
 
   missing <- setdiff(required_genes, rownames(seurat_obj))
   if (length(missing) > 0) {
@@ -169,20 +165,23 @@ preprocess_seurat_standard <- function(seurat,
     }}() |>
     # PCA
     {\(so) {
-      message("[INFO] Running PCA...")
-      Seurat::RunPCA(so, features = Seurat::VariableFeatures(object = so), npcs = n_pcs, verbose = FALSE)
+      message("[INFO] Running PCA (seed=42)...")
+      set.seed(42)
+      Seurat::RunPCA(so, features = Seurat::VariableFeatures(object = so), npcs = n_pcs, verbose = FALSE, seed.use = 42)
     }}() |>
     # Find neighbors and clusters
     {\(so) {
-      message("[INFO] Building neighbor graph and clustering...")
+      message("[INFO] Building neighbor graph and clustering (seed=42)...")
+      set.seed(42)
       so |>
         Seurat::FindNeighbors(dims = 1:min(n_pcs, 30), verbose = FALSE) |>
         Seurat::FindClusters(resolution = resolution, verbose = FALSE)
     }}() |>
     # UMAP
     {\(so) {
-      message("[INFO] Computing UMAP...")
-      Seurat::RunUMAP(so, dims = 1:min(n_pcs, 30), verbose = FALSE)
+      message("[INFO] Computing UMAP (seed=42)...")
+      set.seed(42)
+      Seurat::RunUMAP(so, dims = 1:min(n_pcs, 30), verbose = FALSE, seed.use = 42)
     }}()
 }
 
@@ -202,42 +201,40 @@ score_cell_cycle <- function(seurat) {
 }
 
 # ───────────────────── 4. Root‑cluster selection ───────────────────────────
-select_root_cluster <- function(seurat,
-                                progenitor_markers,
-                                differentiation_markers) {
+select_root_cluster <- function(seurat) {
 
-  message("[INFO] Selecting root cluster based on marker expression...")
-  prog <- intersect(progenitor_markers,      rownames(seurat))
-  diff <- intersect(differentiation_markers, rownames(seurat))
-  stopifnot(length(prog) > 0, length(diff) > 0)
+  message("[INFO] Selecting root cluster based on cell cycle scoring...")
+  message("[WARNING] Automatic root cluster selection is deprecated. Please use --root_cluster to manually specify the root cluster.")
 
-  seurat |>
-    Seurat::AddModuleScore(list(prog), name = "Prog") |>
-    Seurat::AddModuleScore(list(diff), name = "Diff") |>
-    {\(so) {
-      meta <- so@meta.data |>
-        dplyr::transmute(cluster = as.character(seurat_clusters),
-                         prog   = Prog1,
-                         cycle  = S.Score + G2M.Score,
-                         diff   = Diff1)
+  # Only use cell cycle scoring (no tissue-specific markers)
+  # Cell cycle scores should already be present from earlier scoring step
 
-      scores <- meta |>
-        dplyr::group_by(cluster) |>
-        dplyr::summarise(dplyr::across(c(prog, cycle, diff), mean),
-                         n = dplyr::n(),
-                         .groups = "drop") |>
-        dplyr::mutate(prog_sc  = scales::rescale(prog,  to = c(0, 1)),
-                      cycle_sc = scales::rescale(cycle, to = c(0, 1)),
-                      diff_sc  = scales::rescale(diff,  to = c(0, 1)),
-                      root_score = 2*prog_sc + 0.5*cycle_sc - 3*diff_sc) |>
-        dplyr::arrange(dplyr::desc(root_score))
+  # Check if cell cycle scores exist
+  if (!all(c("S.Score", "G2M.Score") %in% colnames(seurat@meta.data))) {
+    stop("Cell cycle scores (S.Score, G2M.Score) not found in metadata. Run cell cycle scoring first.")
+  }
 
-      message("[INFO] Root cluster selected: ", scores$cluster[1], " (score: ", round(scores$root_score[1], 3), ")")
+  # Calculate cluster-level cell cycle scores
+  meta <- seurat@meta.data |>
+    dplyr::transmute(cluster = as.character(seurat_clusters),
+                     cycle  = S.Score + G2M.Score)
 
-      list(start_cluster = scores$cluster[1],
-           score_table   = scores,
-           seurat        = so)
-    }}()
+  scores <- meta |>
+    dplyr::group_by(cluster) |>
+    dplyr::summarise(cycle = mean(cycle),
+                     n = dplyr::n(),
+                     .groups = "drop") |>
+    dplyr::mutate(cycle_sc = scales::rescale(cycle, to = c(0, 1))) |>
+    dplyr::arrange(dplyr::desc(cycle_sc))  # Higher cell cycle score = more progenitor-like
+
+  message("[INFO] Root cluster selected based on cell cycle score: ", scores$cluster[1],
+          " (cycle_sc: ", round(scores$cycle_sc[1], 3), ")")
+  message("[DEBUG] Root cluster details - cycle: ", round(scores$cycle[1], 3),
+          ", n_cells: ", scores$n[1])
+
+  list(start_cluster = scores$cluster[1],
+       score_table   = scores,
+       seurat        = seurat)
 }
 
 # ───────────────────── 5. Slingshot (PCA) ──────────────────────────────────
@@ -751,8 +748,7 @@ plotSlingshotMST_pca <- function(sce,
 run_pipeline_single <- function(sample_id,
                                 h5ad_file_or_list,
                                 out_dir,
-                                progenitor      = c("SOX2", "NES", "HES1", "PAX6", "ASCL1"),
-                                differentiation = c("MAP2", "DCX"),
+                                root_cluster    = NULL,  # Manual root cluster specification
                                 marker_file     = "/work1/yuyasato/vhco_season2/meta/__markers.tsv",
                                 resolution      = 0.5,
                                 n_features      = 2000,
@@ -779,9 +775,7 @@ run_pipeline_single <- function(sample_id,
               readRDS(cache_seu)
             } else {
               read_inputs_single(h5ad_file_or_list,
-                                progenitor,
-                                differentiation,
-                                marker_file) |>
+                                 marker_file = marker_file) |>
               preprocess_seurat_standard(n_features = n_features,
                                         n_pcs = n_pcs,
                                         resolution = resolution) |>
@@ -791,9 +785,18 @@ run_pipeline_single <- function(sample_id,
   saveRDS(seurat, cache_seu)
 
   # ── 2. Root cluster ───────────────────────────────────────────────────
-  root_info <- select_root_cluster(seurat,
-                                   progenitor,
-                                   differentiation)
+  # Use manual root cluster if specified, otherwise auto-select
+  if (!is.null(root_cluster)) {
+    message("[INFO] Using manually specified root cluster: ", root_cluster)
+    root_info <- list(
+      start_cluster = as.character(root_cluster),
+      score_table = NULL,
+      seurat = seurat
+    )
+  } else {
+    message("[INFO] Auto-selecting root cluster based on cell cycle scoring...")
+    root_info <- select_root_cluster(seurat)
+  }
 
   # ── 3. Slingshot ──────────────────────────────────────────────────────
   sce <- if (use_cache && file.exists(cache_sce)) {
@@ -963,11 +966,11 @@ if (!interactive()) {
   sample_id <- NULL
   h5ad_files <- NULL
   out_dir <- NULL
+  root_cluster <- NULL  # Manual root cluster specification
   resolution <- 0.5
   n_features <- 2000
   n_pcs <- 50
   cell_cycle_tsv <- "/home/yuyasato/work3/vhco_season2/meta/__cell_cycle_markers.tsv"
-  root_marker_tsv <- "/home/yuyasato/work3/vhco_season2/meta/__root_markers.tsv"
   canonical_marker_tsv <- "/home/yuyasato/work3/vhco_season2/meta/__markers.tsv"
   force_rerun <- FALSE
   
@@ -1000,11 +1003,11 @@ if (!interactive()) {
     } else if (args[i] == "--cell_cycle_tsv") {
       cell_cycle_tsv <- args[i + 1]
       i <- i + 2
-    } else if (args[i] == "--root_marker_tsv") {
-      root_marker_tsv <- args[i + 1]
-      i <- i + 2 
     } else if (args[i] == "--canonical_marker_tsv") {
       canonical_marker_tsv <- args[i + 1]
+      i <- i + 2
+    } else if (args[i] == "--root_cluster") {
+      root_cluster <- args[i + 1]
       i <- i + 2
     } else if (args[i] == "--force_rerun") {
       force_rerun <- toupper(args[i + 1]) == "TRUE"
@@ -1026,8 +1029,8 @@ if (!interactive()) {
     cat("  --n_features INT             Number of variable features (default: 2000)\n")
     cat("  --n_pcs INT                  Number of PCA components (default: 50)\n")
     cat("  --cell_cycle_tsv FILE        Cell cycle markers file\n")
-    cat("  --root_marker_tsv FILE       Root markers file\n")
     cat("  --canonical_marker_tsv FILE  Canonical markers file\n")
+    cat("  --root_cluster CLUSTER       Manually specify root cluster (skips auto-detection)\n")
     cat("  --force_rerun TRUE/FALSE     Force rerun (default: FALSE)\n")
     quit(status = 1)
   }
@@ -1038,6 +1041,7 @@ if (!interactive()) {
       sample_id = sample_id,
       h5ad_file_or_list = h5ad_files,
       out_dir = out_dir,
+      root_cluster = root_cluster,
       marker_file = canonical_marker_tsv,
       resolution = resolution,
       n_features = n_features,
